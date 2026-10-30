@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "weather-app"
+version = "0.1.0"
+description = "Group capstone: weather analytics app built on the OpenWeatherMap API."
+requires-python = ">=3.11"
+dependencies = [
+    "requests",
+    "python-dotenv",
+    "streamlit",
+    "pandas",
+    "plotly",
+]
+
+[project.scripts]
+collect-weather = "weather_app.collect:main"
+
+[dependency-groups]
+dev = ["pytest"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
