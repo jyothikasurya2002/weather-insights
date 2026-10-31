@@ -104,7 +104,7 @@ def extremes(df: pd.DataFrame) -> dict[str, tuple[str, float]]:
 
 
 def metric_trend(df: pd.DataFrame, locations: list[str],
-                      metric: str = "temperature") -> pd.DataFrame:
+                 metric: str = "temperature") -> pd.DataFrame:
     """Time series of `metric` for the chosen locations, oldest first.
 
     Returns columns `fetched_at`, `location`, `<metric>` — the long format

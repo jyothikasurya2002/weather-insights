@@ -85,3 +85,44 @@ time, cross-location comparison, derived metric), leaving `daily_range` and
   tested without Streamlit or the API.
 
 ---
+
+## Feature: Streamlit app (Live Conditions, Trends, Compare, How to use)
+
+**Asked:** "Let's continue with the next process": build `app.py` on top of
+the client, storage and analytics modules, meeting the rubric's Streamlit
+requirements (2+ views, real interaction, 2+ labelled charts, usable by a
+stranger, key never shown).
+
+**Got:** `app.py` with four pages chosen from the sidebar:
+- **Live Conditions:** a card per tracked city (icon, temperature, feels-like
+  difference, comfort score, humidity, wind, pressure, "updated X ago"), a
+  "Fetch latest for all tracked cities" button, and a "Load sample cities"
+  button on first run.
+- **Trends:** pick cities and a metric to get a Plotly line chart over time
+  (axis labels with units) and summary cards (last, change, low/high/avg).
+- **Compare:** extremes cards, a ranking bar chart by any metric, a world
+  map coloured by comfort index, and a table of the latest readings.
+- **How to use:** instructions, the comfort-index formula with a worked
+  example, and a CSV download of the log.
+- Sidebar: add a city (validated, fetched and logged immediately), remove
+  tracked cities, API-key status (never the key itself), log size.
+
+**Checked:** with Streamlit's `AppTest` (headless):
+- All 4 pages render with no exceptions on our real log.
+- Adding `"   "` and `"12345"` shows input warnings without calling the API.
+  `"Atlantisxyzq"` shows the "city not found" error. `"Lisbon"` is fetched,
+  logged and added to the tracked list.
+- With no API key: a clear error in the sidebar, and the fetch buttons are
+  disabled. Trends and Compare still work from the log.
+- "Fetch latest" logged all 11 tracked cities.
+
+**Kept / changed / rejected:**
+- Changed the starter's two-page layout to four pages, because one
+  "Analytics" page with everything on it was hard to read.
+- Tracked-city additions are queued in `session_state` and applied at the
+  top of the script, because Streamlit raises an error if a widget's value
+  is changed after the widget is drawn.
+- Rejected a °C/°F toggle for now. It would have to be threaded through
+  every chart and table for little benefit.
+
+---
