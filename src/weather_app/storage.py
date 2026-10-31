@@ -52,7 +52,7 @@ class SnapshotStore:
         logged yet, so callers never need a special case for a new install.
         """
         if not self.path.exists() or self.path.stat().st_size == 0:
-            return pd.DataFrame(columns=COLUMNS)
+            return pd.DataFrame(columns=COLUMNS + ["location"])
         df = pd.read_csv(self.path, keep_default_na=False,
                          na_values={"lat": [""], "lon": [""]})
         df["fetched_at"] = pd.to_datetime(df["fetched_at"], utc=True,
