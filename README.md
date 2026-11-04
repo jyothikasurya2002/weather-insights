@@ -77,36 +77,82 @@ skipped and listed with the reason.
 
 ## How to use the app
 
-Pick a page in the sidebar:
+Start the app with `uv run streamlit run app.py`. Use the **sidebar** to
+switch between the four pages and to manage your cities.
 
-- **Live Conditions:** add or choose cities to see their current
-  temperature, feels-like temperature, humidity, wind and comfort score.
-  Each fetch is also saved to the log.
-- **Trends:** choose one or more cities and a metric (temperature,
-  humidity, wind, comfort...) to see how it changed over the logged
-  history, with a summary of the first, last, lowest and highest values.
-- **Compare:** rank all logged cities by a metric using their latest
-  reading, and see headline extremes such as the hottest, coldest,
-  windiest and most comfortable city.
+### Sidebar
+
+- **Add a city:** type a name (e.g. `Madrid`) and press **➕ Add & fetch**.
+  The city's current weather is fetched, saved to the log, and the city is
+  added to your tracked list. If a name exists in several countries, add a
+  country code after a comma, e.g. `Valencia,ES` or `Paris,FR`.
+- **Tracked cities:** the cities shown on the Live Conditions page. Click
+  the ✕ next to a city to stop tracking it. Its history stays in the log.
+- **Status:** shows whether your API key loaded (the key itself is never
+  shown) and how many readings are in the log.
+
+If a city can't be found, or the name is invalid (e.g. `12345`), the app
+shows a warning instead of crashing.
+
+### 🌤️ Live Conditions
+
+One card per tracked city with its latest reading: temperature, how warm
+or cold it *feels* compared to the actual temperature, a small chart of
+its past temperatures, a **comfort score** (0–100), and humidity, wind
+and pressure. Press **🔄 Fetch latest for all tracked cities** to record a
+new reading for every city. On first use, press **Load 10 sample cities**
+to start with a ready-made set.
+
+### 📈 Trends
+
+Choose one or more **cities** and a **metric** (temperature, feels like,
+humidity, wind speed, pressure or comfort index) to see a line chart of
+how it changed over time. Below the chart, a summary card for each city
+shows its latest value, the change since the first reading, and its low,
+high and average. The free API has no history, so every point on the
+chart is a reading we logged ourselves.
+
+### 📊 Compare
+
+Compares each city's most recent reading:
+
+- **Extremes right now:** the hottest, coldest, windiest, most humid, most
+  comfortable and least comfortable city.
+- **Ranking:** a bar chart of all cities ranked by the metric you choose,
+  highest or lowest first.
+- **Where they are:** a world map with each city coloured by its comfort
+  score.
+- **All latest readings:** a table with every city's latest values.
+
+Turn off **Only tracked cities** to include every city in the log, not
+just the ones you're tracking.
+
+### ℹ️ How to use
+
+Short instructions inside the app, an explanation of how the comfort
+index is calculated (it starts at 100 and loses points for temperature
+away from 21 °C, humidity outside 30–60 %, and wind above 5 m/s), and a
+button to **download the full log as a CSV**.
 
 ## Project structure
 
 ```
 .
 ├── pyproject.toml
+├── variables.env.example       # template for your API key file
 ├── variables.env               # not committed — your API key
 ├── data/
 │   └── weather_log.csv         # every fetch, appended by the app/collector
 ├── src/
 │   └── weather_app/
-│       ├── client.py           # API client classes
-│       ├── models.py           # data classes (snapshots, locations...)
+│       ├── client.py           # API client classes and error types
+│       ├── models.py           # WeatherSnapshot and the comfort index
 │       ├── storage.py          # logging/loading fetched history
-│       ├── analytics.py        # analytical views
+│       ├── analytics.py        # trend, comparison and derived-metric views
 │       ├── collect.py          # `uv run collect-weather`
 │       └── config.py           # reads the API key, project paths
 ├── app.py                      # Streamlit entry point
-├── tests/
+├── tests/                      # pytest tests (no API key needed)
 └── PROMPTS.md                  # AI collaboration log
 ```
 
@@ -117,4 +163,3 @@ Pick a page in the sidebar:
 - **Enrique:** daily temperature range analytics
 - **Victoria:** feels-like gap analytics
 - **Ruben:** README and fresh-install testing
-````
