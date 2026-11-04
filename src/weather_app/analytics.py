@@ -11,6 +11,7 @@ input. Three categories from the brief are covered:
                            `feels_like_gap` (feels-like minus actual temp),
                            `daily_range` (the API has no daily high/low)
 """
+
 import pandas as pd
 
 from .models import comfort_index

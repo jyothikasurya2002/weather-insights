@@ -159,9 +159,9 @@ repo, add `feels_like_gap` to `analytics.py` with its tests, and run them.
 ---
 ## Feature: daily temperature range analytics (Enrique, Task B)
 
-*Asked:* Followed the Task B brief and asked Claude [e.g. "to help me
-write daily_range in analytics.py and its tests" ← change to what he
-actually asked].
+*Asked:* Followed the Task B brief and used Claude to help write
+daily_range in analytics.py and its tests, and to fix my setup when
+the tests could not find the weather_app module.
 
 *Got:*
 - daily_range(df) in src/weather_app/analytics.py: the lowest and
@@ -178,12 +178,11 @@ actually asked].
   max 18, range 8. Madrid on Nov 2 (one reading) → range 0. Oslo on Nov 1
   (2, −1 °C) → range 3. The test confirms these values and the order.
 - uv run pytest: 35 tests pass.
-- Ran it on our real log: [what he saw, e.g. "New York had the biggest
-  range on Nov 3 (11.3 → 19.1 °C, 7.8 °C)"].
+- Ran it on our real log: New York had the biggest daily range, on Nov 3
+  (11.3 → 19.1 °C, a range of 7.8 °C).
 
 *Kept / changed / rejected:*
 - Kept the function pure (DataFrame in, DataFrame out) like the other
   analytics, using df.assign so the input is not changed.
-- [e.g. "Changed the test comment, which wrongly mentioned averages"]
-- [e.g. "Rejected rounding the values, so the table keeps the exact
-  readings" ← only if he actually considered it, otherwise delete]
+- Changed the comment above my test, which wrongly said the function also
+  calculates an average temperature.
