@@ -7,7 +7,8 @@ input. Three categories from the brief are covered:
 - Trend over time:         `metric_trend`, `trend_summary`
 - Cross-location compare:  `latest_by_location`, `rank_locations`,
                            `extremes`
-- Derived metric:          `add_comfort_index` (the API has no comfort score)
+- Derived metric:          `add_comfort_index` (the API has no comfort score),
+                           `feels_like_gap` (feels-like minus actual temp)
 """
 
 import pandas as pd
@@ -143,3 +144,22 @@ def trend_summary(df: pd.DataFrame, location: str,
         "max": float(values.max()),
         "mean": round(float(values.mean()), 1),
     }
+
+
+def feels_like_gap(df: pd.DataFrame) -> pd.DataFrame:
+    """Average feels-like minus actual temperature per location (°C).
+
+    Negative means wind makes a place feel colder than the thermometer
+    says; positive means humidity makes it feel warmer. Sorted from most
+    negative to most positive, with the number of readings behind each.
+    """
+    columns = ["location", "avg_gap", "samples"]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    data = df.assign(gap=df["feels_like"] - df["temperature"])
+    out = (data.groupby("location")["gap"]
+               .agg(["mean", "count"])
+               .reset_index()
+               .rename(columns={"mean": "avg_gap", "count": "samples"}))
+    out["avg_gap"] = out["avg_gap"].round(1)
+    return out.sort_values("avg_gap").reset_index(drop=True)[columns]

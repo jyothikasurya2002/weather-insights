@@ -6,6 +6,7 @@ import pytest
 from weather_app.analytics import (
     add_comfort_index,
     extremes,
+    feels_like_gap,
     latest_by_location,
     metric_trend,
     rank_locations,
@@ -92,3 +93,29 @@ def test_empty_log_is_handled():
     assert extremes(EMPTY) == {}
     assert metric_trend(EMPTY, ["Madrid, ES"]).empty
     assert trend_summary(EMPTY, "Madrid, ES") is None
+
+
+def test_feels_like_gap():
+    df = pd.DataFrame([
+        ("Toronto, CA", 10.0, 7.0),
+        ("Toronto, CA", 8.0, 4.0),
+        ("Mumbai, IN", 30.0, 35.0),
+        ("Mumbai, IN", 28.0, 31.0),
+        ("London, GB", 15.0, 15.0),
+    ], columns=["location", "temperature", "feels_like"])
+
+    result = feels_like_gap(df)
+
+    assert list(result.columns) == ["location", "avg_gap", "samples"]
+    # Toronto: gaps -3 and -4 -> -3.5; Mumbai: +5 and +3 -> +4.0.
+    assert list(result["location"]) == ["Toronto, CA", "London, GB",
+                                        "Mumbai, IN"]
+    assert list(result["avg_gap"]) == [-3.5, 0.0, 4.0]
+    assert list(result["samples"]) == [2, 1, 2]
+    assert "gap" not in df.columns       # input not modified
+
+
+def test_feels_like_gap_empty():
+    result = feels_like_gap(EMPTY)
+    assert result.empty
+    assert list(result.columns) == ["location", "avg_gap", "samples"]
