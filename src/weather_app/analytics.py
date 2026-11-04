@@ -8,7 +8,8 @@ input. Three categories from the brief are covered:
 - Cross-location compare:  `latest_by_location`, `rank_locations`,
                            `extremes`
 - Derived metric:          `add_comfort_index` (the API has no comfort score),
-                           `feels_like_gap` (feels-like minus actual temp)
+                           `feels_like_gap` (feels-like minus actual temp),
+                           `daily_range` (the API has no daily high/low)
 """
 
 import pandas as pd
@@ -163,3 +164,18 @@ def feels_like_gap(df: pd.DataFrame) -> pd.DataFrame:
                .rename(columns={"mean": "avg_gap", "count": "samples"}))
     out["avg_gap"] = out["avg_gap"].round(1)
     return out.sort_values("avg_gap").reset_index(drop=True)[columns]
+
+# Daily temperature range per location, for charting or table display.
+
+def daily_range(df: pd.DataFrame) -> pd.DataFrame:
+    """Min, max and range of temperature per location per UTC day."""
+    columns = ["location", "date", "min_temp", "max_temp", "range"]
+    if df.empty:
+        return pd.DataFrame(columns=columns)
+    data = df.assign(date=df["fetched_at"].dt.tz_convert("UTC").dt.date)
+    out = (data.groupby(["location", "date"])["temperature"]
+               .agg(["min", "max"])
+               .reset_index()
+               .rename(columns={"min": "min_temp", "max": "max_temp"}))
+    out["range"] = out["max_temp"] - out["min_temp"]
+    return out.sort_values(["location", "date"]).reset_index(drop=True)[columns]
