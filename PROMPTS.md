@@ -126,6 +126,7 @@ stranger, key never shown).
   every chart and table for little benefit.
 
 ---
+
 ## Feature: README rewrite (Ruben, Task C)
 
 **Asked:** Claude to check my README against the finished app and give a
@@ -157,3 +158,63 @@ written before the app existed.
   "locations", a class the project doesn't have.
 
 ---
+
+## Feature: feels-like gap analytics (Victória, Task D)
+
+**Asked:** Followed the Task D brief and asked Claude Code to set up the
+repo, add `feels_like_gap` to `analytics.py` with its tests, and run them.
+
+**Got:**
+- `feels_like_gap(df)` in `src/weather_app/analytics.py`: average of
+  `feels_like - temperature` per location (rounded to 1 decimal) and the
+  number of readings, sorted from most negative to most positive. Returns
+  an empty table with the same 3 columns if there is no data.
+- Added it to the "Derived metric" line in the module docstring.
+- Two tests in `tests/test_analytics.py`: the worked example from the brief
+  and the empty-input case.
+
+**Checked:**
+- Worked example by hand: Toronto gaps −3 and −4 → −3.5; Mumbai +5 and +3
+  → +4.0; London 0.0. The test confirms the order and the values, and that
+  the input DataFrame is not modified.
+- `uv run pytest`: 33 tests pass.
+- Ran it on our real log (Oct 30 – Nov 4): Reykjavik −3.6 and Paris −1.8 at
+  the top (wind makes them feel colder), Dubai +3.5 and Mumbai +4.8 at the
+  bottom (humidity makes them feel warmer), which matches what we expected.
+
+**Kept / changed / rejected:**
+- Kept the function pure (DataFrame in, DataFrame out) like the other
+  analytics, using `df.assign` so the input is not changed.
+- Expanded the one-line docstring to say what a negative or positive gap
+  means, since that is the part a reader needs to interpret the numbers.
+
+---
+## Feature: daily temperature range analytics (Enrique, Task B)
+
+*Asked:* Followed the Task B brief and used Claude to help write
+daily_range in analytics.py and its tests, and to fix my setup when
+the tests could not find the weather_app module.
+
+*Got:*
+- daily_range(df) in src/weather_app/analytics.py: the lowest and
+  highest temperature, and the range (max − min), for each location on
+  each UTC day, sorted by location then date. Returns an empty table with
+  the same 5 columns if there is no data.
+- Added it to the "Derived metric" line in the module docstring, after
+  Victoria's feels_like_gap.
+- Two tests in tests/test_analytics.py: the worked example from the
+  brief and the empty-input case.
+
+*Checked:*
+- Worked example by hand: Madrid on Nov 1 (10, 18, 14 °C) → min 10,
+  max 18, range 8. Madrid on Nov 2 (one reading) → range 0. Oslo on Nov 1
+  (2, −1 °C) → range 3. The test confirms these values and the order.
+- uv run pytest: 35 tests pass.
+- Ran it on our real log: New York had the biggest daily range, on Nov 3
+  (11.3 → 19.1 °C, a range of 7.8 °C).
+
+*Kept / changed / rejected:*
+- Kept the function pure (DataFrame in, DataFrame out) like the other
+  analytics, using df.assign so the input is not changed.
+- Changed the comment above my test, which wrongly said the function also
+  calculates an average temperature.

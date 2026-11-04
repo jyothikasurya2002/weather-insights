@@ -5,7 +5,9 @@ import pytest
 
 from weather_app.analytics import (
     add_comfort_index,
+    daily_range,
     extremes,
+    feels_like_gap,
     latest_by_location,
     metric_trend,
     rank_locations,
@@ -92,3 +94,62 @@ def test_empty_log_is_handled():
     assert extremes(EMPTY) == {}
     assert metric_trend(EMPTY, ["Madrid, ES"]).empty
     assert trend_summary(EMPTY, "Madrid, ES") is None
+
+
+def test_feels_like_gap():
+    df = pd.DataFrame([
+        ("Toronto, CA", 10.0, 7.0),
+        ("Toronto, CA", 8.0, 4.0),
+        ("Mumbai, IN", 30.0, 35.0),
+        ("Mumbai, IN", 28.0, 31.0),
+        ("London, GB", 15.0, 15.0),
+    ], columns=["location", "temperature", "feels_like"])
+
+    result = feels_like_gap(df)
+
+    assert list(result.columns) == ["location", "avg_gap", "samples"]
+    # Toronto: gaps -3 and -4 -> -3.5; Mumbai: +5 and +3 -> +4.0.
+    assert list(result["location"]) == ["Toronto, CA", "London, GB",
+                                        "Mumbai, IN"]
+    assert list(result["avg_gap"]) == [-3.5, 0.0, 4.0]
+    assert list(result["samples"]) == [2, 1, 2]
+    assert "gap" not in df.columns       # input not modified
+
+
+def test_feels_like_gap_empty():
+    result = feels_like_gap(EMPTY)
+    assert result.empty
+    assert list(result.columns) == ["location", "avg_gap", "samples"]
+
+# Testing daily temperature range and temperature for each location
+
+def test_daily_range():
+    df = pd.DataFrame([
+        ("2026-11-01T06:00", "Madrid, ES", 10.0),
+        ("2026-11-01T12:00", "Madrid, ES", 18.0),
+        ("2026-11-01T18:00", "Madrid, ES", 14.0),
+        ("2026-11-02T12:00", "Madrid, ES", 16.0),
+        ("2026-11-01T12:00", "Oslo, NO", 2.0),
+        ("2026-11-01T18:00", "Oslo, NO", -1.0),
+    ], columns=["fetched_at", "location", "temperature"])
+    df["fetched_at"] = pd.to_datetime(df["fetched_at"], utc=True)
+
+    result = daily_range(df)
+
+    assert list(result.columns) == ["location", "date", "min_temp",
+                                    "max_temp", "range"]
+    assert len(result) == 3
+    assert list(result["location"]) == ["Madrid, ES", "Madrid, ES",
+                                        "Oslo, NO"]
+    assert list(result["range"]) == [8.0, 0.0, 3.0]
+    assert result.loc[0, "min_temp"] == 10.0
+    assert result.loc[0, "max_temp"] == 18.0
+    assert result.loc[2, "min_temp"] == -1.0    # Oslo
+    assert result.loc[2, "max_temp"] == 2.0
+
+
+def test_daily_range_empty():
+    result = daily_range(EMPTY)
+    assert result.empty
+    assert list(result.columns) == ["location", "date", "min_temp",
+                                    "max_temp", "range"]
