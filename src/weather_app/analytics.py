@@ -8,9 +8,9 @@ input. Three categories from the brief are covered:
 - Cross-location compare:  `latest_by_location`, `rank_locations`,
                            `extremes`
 - Derived metric:          `add_comfort_index` (the API has no comfort score),
-                           `feels_like_gap` (feels-like minus actual temp)
+                           `feels_like_gap` (feels-like minus actual temp),
+                           `daily_range` (the API has no daily high/low)
 """
-
 import pandas as pd
 
 from .models import comfort_index

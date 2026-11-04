@@ -121,7 +121,7 @@ def test_feels_like_gap_empty():
     assert result.empty
     assert list(result.columns) == ["location", "avg_gap", "samples"]
 
-# Testing daily temperature range and average temperature for each location
+# Testing daily temperature range and temperature for each location
 
 def test_daily_range():
     df = pd.DataFrame([
