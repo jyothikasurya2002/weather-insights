@@ -4,6 +4,7 @@ import pytest
 import requests
 
 from weather_app.client import (
+    APIError,
     AuthenticationError,
     InvalidInputError,
     LocationNotFoundError,
@@ -124,3 +125,16 @@ def test_api_key_is_private_and_not_in_repr():
     client = OpenWeatherClient("secret-123")
     assert not hasattr(client, "__api_key")
     assert "secret-123" not in repr(client)
+
+
+def test_timeout_raises_network_error():
+    client = make_client({"London": requests.Timeout("timed out")})
+    with pytest.raises(NetworkError):
+        client.fetch_current("London")
+
+
+def test_403_raises_generic_api_error():
+    client = make_client({"London": FakeResponse(403, {})})
+    with pytest.raises(APIError) as info:
+        client.fetch_current("London")
+    assert info.type is APIError
