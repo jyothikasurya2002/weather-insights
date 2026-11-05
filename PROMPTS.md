@@ -252,3 +252,46 @@ timeout and one for an HTTP 403 response.
   without a network connection or API key, like the other client tests.
 
 ---
+
+## Feature: teammates' analytics in the app, and a rubric review
+
+**Asked:** "Build the teammates' functions into the app, and check the app
+against the rubric and change whatever needs changing to get the highest
+score."
+
+**Got:**
+- Trends page: a **Daily temperature range** chart using Enrique's
+  `daily_range`, with a floating bar per day from the low to the high,
+  plus a caption naming the widest swing.
+- Compare page: a **"Does it feel colder or warmer than it is?"** chart
+  using Victoria's `feels_like_gap`, coloured blue (feels colder) to red
+  (feels warmer).
+- Trends now starts with the tracked cities that have the most history.
+  Before, it picked the first three alphabetically, which included a city
+  with a single reading, so the first chart showed one dot.
+- `collect-weather` prints cities hottest-first with
+  `sorted(snapshots, reverse=True)`, so `WeatherSnapshot.__lt__` is used
+  by the program itself, not only by the tests.
+- README "How to use the app" and the in-app How to use page updated to
+  describe the two new charts.
+
+**Checked:**
+- Rendered all four pages headlessly with Streamlit's `AppTest`: no
+  exceptions, and both new sections appear. Took screenshots to check the
+  charts look right.
+- The widest daily swing caption says New York on Nov 3, 11.3 → 19.1 °C,
+  which matches running `daily_range` on the log directly.
+- Clean-clone test: cloned the repo from GitHub into an empty folder and
+  followed only the README. `uv sync` and `uv run pytest` (37 passed)
+  worked. With the placeholder key the app and collector showed a clear
+  "key is not set" message instead of crashing, and with a real key all
+  four pages loaded.
+
+**Kept / changed / rejected:**
+- Hid zero-height bars (days with a single reading) in the daily range
+  chart and explained why in the caption, instead of drawing empty bars.
+- Rejected adding a separate page for the teammates' metrics: they fit
+  next to the related views (trend and comparison), which is easier to
+  follow.
+
+---

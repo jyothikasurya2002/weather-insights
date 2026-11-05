@@ -112,14 +112,22 @@ shows its latest value, the change since the first reading, and its low,
 high and average. The free API has no history, so every point on the
 chart is a reading we logged ourselves.
 
+**Daily temperature range:** for the same cities, a bar for each day
+running from that day's lowest to its highest logged temperature, and the
+widest swing in the period. A city needs at least two readings on the
+same day to show a bar.
+
 ### 📊 Compare
 
-Compares each city's most recent reading:
+Compares the cities side by side:
 
 - **Extremes right now:** the hottest, coldest, windiest, most humid, most
-  comfortable and least comfortable city.
+  comfortable and least comfortable city, from each city's latest reading.
 - **Ranking:** a bar chart of all cities ranked by the metric you choose,
   highest or lowest first.
+- **Does it feel colder or warmer than it is?** Each city's average
+  *feels like − actual temperature* over all its readings. Below zero,
+  wind makes it feel colder; above zero, humidity makes it feel warmer.
 - **Where they are:** a world map with each city coloured by its comfort
   score.
 - **All latest readings:** a table with every city's latest values.

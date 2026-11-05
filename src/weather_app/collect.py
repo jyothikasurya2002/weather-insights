@@ -28,7 +28,8 @@ def main(argv: list[str] | None = None) -> int:
     store = SnapshotStore()
     store.append_many(snapshots)
 
-    for snapshot in snapshots:
+    # Hottest first: sorted() uses WeatherSnapshot.__lt__ (by temperature).
+    for snapshot in sorted(snapshots, reverse=True):
         print(f"  logged  {snapshot}")
     for city, reason in failures.items():
         print(f"  skipped {city}: {reason}", file=sys.stderr)

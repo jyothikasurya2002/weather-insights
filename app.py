@@ -9,7 +9,9 @@ import streamlit as st
 
 from weather_app.analytics import (
     METRICS,
+    daily_range,
     extremes,
+    feels_like_gap,
     latest_by_location,
     metric_trend,
     rank_locations,
@@ -277,7 +279,10 @@ def trends_page() -> None:
         return
 
     locations = sorted(history["location"].unique())
-    default = [loc for loc in tracked if loc in locations][:3]
+    # Start with the tracked cities that have the most history, so the
+    # first chart a visitor sees has real lines, not single dots.
+    by_history = history["location"].value_counts().index
+    default = [loc for loc in by_history if loc in tracked][:3]
     left, right = st.columns([3, 1])
     chosen = left.multiselect("Cities", locations,
                               default=default or locations[:3])
@@ -315,6 +320,39 @@ def trends_page() -> None:
     if trend["fetched_at"].nunique() < 3:
         st.info("💡 Only a few readings so far. Fetch again over the next "
                 "few days and these lines will fill in.")
+
+    daily_range_chart(chosen)
+
+
+def daily_range_chart(chosen: list[str]) -> None:
+    """Each day's low-to-high temperature span as a floating bar."""
+    st.subheader("Daily temperature range")
+    st.caption("Each bar runs from the day's lowest to its highest logged "
+               "temperature (UTC days). The API only reports the current "
+               "temperature, so the daily high and low come from our log.")
+    days = daily_range(history[history["location"].isin(chosen)])
+    # A single reading gives a zero-height bar, so keep only real spans.
+    days = days[days["range"] > 0]
+    if days.empty:
+        st.info("A city needs at least two readings on the same day to "
+                "show a range. Fetch again later today.")
+        return
+    days["date"] = days["date"].astype(str)
+    fig = px.bar(
+        days, x="date", y="range", base="min_temp", color="location",
+        barmode="group",
+        hover_data={"min_temp": ":.1f", "max_temp": ":.1f", "range": ":.1f"},
+        labels={"date": "Day (UTC)", "range": "Range (°C)",
+                "min_temp": "Low (°C)", "max_temp": "High (°C)",
+                "location": "City"},
+        title="Daily low to high temperature")
+    fig.update_yaxes(title_text="Temperature (°C)")
+    fig.update_layout(legend_title_text="")
+    st.plotly_chart(fig, width="stretch")
+    widest = days.loc[days["range"].idxmax()]
+    st.caption(f"Widest swing: **{widest['location']}** on "
+               f"{widest['date']}, from {widest['min_temp']:.1f} to "
+               f"{widest['max_temp']:.1f} °C ({widest['range']:.1f} °C).")
 
 
 # ---- page: compare --------------------------------------------------------
@@ -364,6 +402,8 @@ def compare_page() -> None:
                       height=max(300, 45 * len(ranked)))
     st.plotly_chart(fig, width="stretch")
 
+    feels_like_chart(data)
+
     st.subheader("Where they are")
     latest = latest_by_location(data).dropna(subset=["lat", "lon"])
     fig = px.scatter_geo(
@@ -405,6 +445,30 @@ def compare_page() -> None:
         })
 
 
+def feels_like_chart(data: pd.DataFrame) -> None:
+    """Average feels-like minus actual temperature, per city."""
+    st.subheader("Does it feel colder or warmer than it is?")
+    st.caption("Average of *feels like − actual temperature* over every "
+               "logged reading. Below zero, wind makes a city feel colder; "
+               "above zero, humidity makes it feel warmer.")
+    gaps = feels_like_gap(data)
+    limit = max(1.0, gaps["avg_gap"].abs().max())
+    fig = px.bar(
+        gaps, x="avg_gap", y="location", orientation="h", text="avg_gap",
+        color="avg_gap", color_continuous_scale="RdBu_r",
+        range_color=(-limit, limit),
+        hover_data={"samples": True},
+        labels={"avg_gap": "Feels-like minus actual (°C)",
+                "location": "City", "samples": "Readings"},
+        title="Average feels-like gap")
+    fig.update_traces(texttemplate="%{text:+.1f}", textposition="outside")
+    fig.update_yaxes(categoryorder="array",
+                     categoryarray=list(gaps["location"])[::-1])
+    fig.update_layout(coloraxis_showscale=False,
+                      height=max(300, 45 * len(gaps)))
+    st.plotly_chart(fig, width="stretch")
+
+
 # ---- page: how to use -----------------------------------------------------
 
 
@@ -419,9 +483,11 @@ builds its own history, so you can see trends and compare places.
    *Add & fetch*. For ambiguous names add a country code: `Paris,FR`.
 2. **Live Conditions** shows the latest reading per city. Press
    *Fetch latest* any time to record a new reading for every tracked city.
-3. **Trends** charts how a metric changed over time for the cities you pick.
-4. **Compare** ranks cities by any metric, highlights the extremes, and
-   maps them.
+3. **Trends** charts how a metric changed over time for the cities you pick,
+   and each day's low-to-high temperature range.
+4. **Compare** ranks cities by any metric, highlights the extremes, shows
+   which cities feel colder or warmer than the thermometer says, and maps
+   them.
 
 #### Why the history matters
 OpenWeatherMap's free tier only returns *current* conditions. Every fetch
