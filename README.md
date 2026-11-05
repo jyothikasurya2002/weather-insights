@@ -88,13 +88,15 @@ switch between the four pages and to manage your cities.
   The city's current weather is fetched, saved to the log, and the city is
   added to your tracked list. If a name exists in several countries, add a
   country code after a comma, e.g. `Valencia,ES` or `Paris,FR`.
-- **Tracked cities:** the cities shown on the Live Conditions page. Click
-  the ✕ next to a city to stop tracking it. Its history stays in the log.
+- **Tracked cities:** the cities shown on the Live Conditions page. When
+  you open the app, every city in the log is tracked. Click the ✕ next to
+  a city to stop tracking it. Its history stays in the log.
 - **Status:** shows whether your API key loaded (the key itself is never
   shown) and how many readings are in the log.
 
-If a city can't be found, or the name is invalid (e.g. `12345`), the app
-shows a warning instead of crashing.
+If the name is invalid (e.g. `12345`), the city can't be found, or the
+key or network fails, the app shows a clear message explaining what went
+wrong instead of crashing.
 
 ### 🌤️ Live Conditions
 
@@ -102,8 +104,9 @@ One card per tracked city with its latest reading: temperature, how warm
 or cold it *feels* compared to the actual temperature, a small chart of
 its past temperatures, a **comfort score** (0–100), and humidity, wind
 and pressure. Press **🔄 Fetch latest for all tracked cities** to record a
-new reading for every city. On first use, press **Load 10 sample cities**
-to start with a ready-made set.
+new reading for every city. If no cities are tracked (for example with
+an empty log), a **Load 10 sample cities** button appears to start with a
+ready-made set.
 
 ### 📈 Trends
 
