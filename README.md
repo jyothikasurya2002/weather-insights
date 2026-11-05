@@ -5,8 +5,10 @@
 Weather Insights fetches live weather for any cities you choose from the
 OpenWeatherMap API. Every fetch is saved to a log file, so the app builds
 its own weather history over time. That history shows how conditions
-change, which cities are hottest, coldest or windiest right now, and a
-0–100 comfort score that combines temperature, humidity and wind.
+change, each city's daily temperature range, which cities are hottest,
+coldest or windiest right now, which ones feel colder or warmer than the
+thermometer says, and a 0–100 comfort score that combines temperature,
+humidity and wind.
 
 ## Setup
 
