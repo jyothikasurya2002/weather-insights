@@ -127,6 +127,38 @@ stranger, key never shown).
 
 ---
 
+## Feature: README rewrite (Ruben, Task C)
+
+**Asked:** Claude to check my README against the finished app and give a
+complete, corrected version, because my "How to use the app" section was
+written before the app existed.
+
+**Got:** a full README draft:
+- "How to use the app" rewritten to cover the sidebar (add a city, tracked
+  cities, key status) and all four pages: Live Conditions, Trends, Compare
+  and How to use.
+- Small fixes to "Project structure" (added `variables.env.example`,
+  corrected the `models.py` description, described `tests/`).
+- The stray ```` line at the end of my first version removed.
+
+**Checked:**
+- Ran `uv run streamlit run app.py` and clicked through every page. Every
+  button and page name in the new section matches the app.
+- Tried adding `Madrid` and `12345` in the sidebar: Madrid was added, and
+  `12345` showed a warning instead of crashing, as the README says.
+- Previewed the README on GitHub to check headings and code blocks render.
+
+**Kept / changed / rejected:**
+- Kept my own Setup, Run the tests, Run the app and Collecting data
+  sections, which were already correct after my fresh-install test.
+- Changed "How to use the app" to the new version, because my draft
+  described only three pages and missed the sidebar, the map, the table
+  and the CSV download.
+- Changed the `models.py` line in Project structure, which mentioned
+  "locations", a class the project doesn't have.
+
+---
+
 ## Feature: feels-like gap analytics (Victória, Task D)
 
 **Asked:** Followed the Task D brief and asked Claude Code to set up the
@@ -186,3 +218,37 @@ the tests could not find the weather_app module.
   analytics, using df.assign so the input is not changed.
 - Changed the comment above my test, which wrongly said the function also
   calculates an average temperature.
+
+---
+
+## Feature: client error tests for timeout and HTTP 403 (Juan, Task A)
+
+**Asked:** Followed the Task A brief, whose reference solution was written
+with Claude, to add two tests to `tests/test_client.py`: one for a request
+timeout and one for an HTTP 403 response.
+
+**Got:**
+- `test_timeout_raises_network_error`: the fake session raises
+  `requests.Timeout`, and the test checks that `fetch_current` raises our
+  `NetworkError`.
+- `test_403_raises_generic_api_error`: the fake session returns
+  `FakeResponse(403, {})`, and the test checks that the error is exactly
+  `APIError`, not one of its subclasses.
+- `APIError` added to the import list at the top of the file.
+
+**Checked:**
+- Read `JSONAPIClient._get`: it catches `requests.Timeout` and raises
+  `NetworkError` instead, so the first test matches the code.
+- Read `_raise_for_status`: it handles 200, 401, 404, 429 and 5xx. 403
+  matches none of them, so it reaches the last line and raises a plain
+  `APIError("Unexpected response from the server (HTTP 403).")`.
+- `uv run pytest`: 37 tests pass (35 existing + my 2).
+
+**Kept / changed / rejected:**
+- Kept `info.type is APIError` in the 403 test, because
+  `pytest.raises(APIError)` alone would also pass if a subclass such as
+  `AuthenticationError` were raised.
+- Kept both tests on the fake session instead of the real API, so they run
+  without a network connection or API key, like the other client tests.
+
+---
