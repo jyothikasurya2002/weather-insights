@@ -14,7 +14,12 @@ from .models import WeatherSnapshot
 
 COLUMNS = ["fetched_at", "city", "country", "temperature", "feels_like",
            "humidity", "wind_speed", "pressure", "description", "icon",
-           "lat", "lon"]
+           "lat", "lon", "condition_id", "visibility", "wind_gust",
+           "rain_mm_h", "snow_mm_h"]
+# Numeric columns that may be blank: older rows predate them, and the API
+# leaves out rain, snow and gusts when there are none.
+OPTIONAL_NUMBERS = ["lat", "lon", "condition_id", "visibility", "wind_gust",
+                    "rain_mm_h", "snow_mm_h"]
 
 
 class SnapshotStore:
@@ -26,10 +31,29 @@ class SnapshotStore:
     def _ensure_file(self) -> None:
         """Create the folder and the header row the first time we write."""
         if self.path.exists() and self.path.stat().st_size > 0:
+            self._upgrade_header()
             return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("w", newline="", encoding="utf-8") as f:
             csv.DictWriter(f, fieldnames=COLUMNS).writeheader()
+
+    def _upgrade_header(self) -> None:
+        """Rewrite a log made by an older version with today's columns.
+
+        Existing rows are kept unchanged; columns they don't have are left
+        blank. Without this, new rows would be appended under the old
+        header and the columns would no longer line up.
+        """
+        with self.path.open(newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            if reader.fieldnames == COLUMNS:
+                return
+            rows = list(reader)
+        with self.path.open("w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=COLUMNS,
+                                    extrasaction="ignore")
+            writer.writeheader()
+            writer.writerows(rows)
 
     def append(self, snapshot: WeatherSnapshot) -> None:
         self.append_many([snapshot])
@@ -54,7 +78,10 @@ class SnapshotStore:
         if not self.path.exists() or self.path.stat().st_size == 0:
             return pd.DataFrame(columns=COLUMNS + ["location"])
         df = pd.read_csv(self.path, keep_default_na=False,
-                         na_values={"lat": [""], "lon": [""]})
+                         na_values={col: [""] for col in OPTIONAL_NUMBERS})
+        for column in COLUMNS:          # a log from an older version
+            if column not in df:
+                df[column] = float("nan")
         df["fetched_at"] = pd.to_datetime(df["fetched_at"], utc=True,
                                           format="ISO8601")
         df["location"] = df["city"].where(

@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+import pandas as pd
+
 from weather_app.models import WeatherSnapshot, comfort_index
 from weather_app.storage import SnapshotStore
 
@@ -52,3 +54,27 @@ def test_store_round_trip(tmp_path):
     assert list(df["city"]) == ["Madrid", "Oslo", "Madrid"]  # time order
     assert df["fetched_at"].dt.tz is not None
     assert df.loc[1, "location"] == "Oslo, ES"
+
+
+def test_old_log_is_upgraded_without_losing_rows(tmp_path):
+    path = tmp_path / "log.csv"
+    path.write_text(
+        "fetched_at,city,country,temperature,feels_like,humidity,"
+        "wind_speed,pressure,description,icon,lat,lon\n"
+        "2026-11-01T09:00:00+00:00,Paris,FR,10.0,9.0,90.0,2.0,1010.0,"
+        "fog,50d,48.85,2.35\n", encoding="utf-8")
+    store = SnapshotStore(path)
+    assert store.load()["condition_id"].isna().all()   # old file loads
+
+    new = make_snapshot(hour=15)
+    new.condition_id, new.visibility = 800, 10000.0
+    store.append(new)
+
+    df = store.load()
+    assert len(df) == 2
+    assert df.loc[0, "description"] == "fog"           # old row intact
+    assert pd.isna(df.loc[0, "condition_id"])
+    assert df.loc[1, "condition_id"] == 800
+    back = WeatherSnapshot.from_record(df.loc[1])
+    assert back == new and back.condition_id == 800
+    assert WeatherSnapshot.from_record(df.loc[0]).condition_id is None

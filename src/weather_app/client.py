@@ -151,20 +151,40 @@ class OpenWeatherClient(JSONAPIClient):
                 f"City name contains invalid characters: {' '.join(bad)}")
         return cleaned
 
-    def fetch_current(self, city: str) -> WeatherSnapshot:
-        """Validate `city`, call the API, and return a WeatherSnapshot."""
+    def _get_city(self, endpoint: str, city: str) -> tuple[str, dict]:
+        """Validate `city` and call `endpoint` for it; 404 -> not found."""
         cleaned = self.validate_city(city)
         try:
-            data = self._get("weather", {"q": cleaned})
+            return cleaned, self._get(endpoint, {"q": cleaned})
         except NotFoundError:
             raise LocationNotFoundError(
                 f"City '{cleaned}' was not found. Check the spelling, or "
                 "add a country code like 'Paris,FR'.") from None
+
+    def fetch_current(self, city: str) -> WeatherSnapshot:
+        """Validate `city`, call the API, and return a WeatherSnapshot."""
+        cleaned, data = self._get_city("weather", city)
         try:
             return WeatherSnapshot.from_api(data)
         except (KeyError, IndexError, TypeError):
             raise APIError(f"Unexpected data format returned for "
                            f"'{cleaned}'.") from None
+
+    def fetch_forecast(self, city: str) -> list[WeatherSnapshot]:
+        """The 5-day forecast for `city` in 3-hour steps, earliest first.
+
+        One snapshot per step, with `fetched_at` set to the time the step
+        is for. Forecasts are predictions, so callers should not add them
+        to the observation log.
+        """
+        cleaned, data = self._get_city("forecast", city)
+        try:
+            steps = [WeatherSnapshot.from_forecast(item, data["city"])
+                     for item in data["list"]]
+        except (KeyError, IndexError, TypeError):
+            raise APIError(f"Unexpected forecast format returned for "
+                           f"'{cleaned}'.") from None
+        return sorted(steps, key=lambda step: step.fetched_at)
 
     def fetch_many(self, cities: list[str]
                    ) -> tuple[list[WeatherSnapshot], dict[str, str]]:

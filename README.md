@@ -10,6 +10,35 @@ coldest or windiest right now, which ones feel colder or warmer than the
 thermometer says, and a 0–100 comfort score that combines temperature,
 humidity and wind.
 
+### Business use case: weather-driven delivery risk
+
+The main use of these insights is for a **logistics team**. Each city is
+a delivery hub, and weather is turned into a traffic-light signal with an
+estimated delay:
+
+| Signal | Meaning | Extra trip time |
+|---|---|---|
+| 🟢 Green | normal operations | none |
+| 🟡 Yellow | minor delays: allow extra time | +10–20 % |
+| 🟠 Orange | significant delays: reschedule time-critical deliveries | +25–50 % |
+| 🔴 Red | unsafe: hold or reroute | +50–100 % |
+
+The signal depends on rain and snow, visibility, wind, gusts and
+temperature (ice and heat), and on the **vehicle**: a high-sided truck is
+more sensitive to wind, and a bike courier to rain, wind and heat. The
+app answers four questions:
+
+- **Which hubs can ship right now?** (dispatch board)
+- **Is this route safe, and when is the best time to leave?** (route
+  planner, using the 5-day forecast)
+- **What do the next 5 days look like for a hub?** (hub outlook)
+- **Which hubs are most often disrupted by weather?** (hub reliability,
+  from our own logged history)
+
+The thresholds and delay ranges are our own rule-based assumptions, based
+on common road-safety guidance (for example, gale force starts at
+17 m/s). They have not been calibrated on real delivery data.
+
 ## Setup
 
 1. **Install uv** (it installs Python and the project's packages):
@@ -80,7 +109,7 @@ skipped and listed with the reason.
 ## How to use the app
 
 Start the app with `uv run streamlit run app.py`. Use the **sidebar** to
-switch between the four pages and to manage your cities.
+switch between the five pages and to manage your cities.
 
 ### Sidebar
 
@@ -97,6 +126,33 @@ switch between the four pages and to manage your cities.
 If the name is invalid (e.g. `12345`), the city can't be found, or the
 key or network fails, the app shows a clear message explaining what went
 wrong instead of crashing.
+
+### 🚚 Delivery Risk
+
+The first page. Choose a **vehicle** (🚐 Van, 🚛 Truck or 🛵 Bike) at the
+top, then use the four tabs:
+
+- **📋 Dispatch board:** one coloured box per tracked hub with its signal,
+  what to do, the expected extra trip time and the reasons (for example
+  "Fog" or "Wind 8.2 m/s"), worst first. Counts of each signal are shown
+  above. Press **🔄 Refresh live readings** to fetch and log new readings.
+- **🗺️ Route planner:** pick **From** and **To** hubs, the normal trip time
+  and a departure day and hour (UTC, up to 4 days ahead). The origin is
+  judged on its forecast at departure and the destination at arrival,
+  and the route takes the worse of the two. You see the expected trip
+  time, both ends' conditions, and a chart of the route signal for every
+  possible departure. If another time is safer, the app suggests it, e.g.
+  "Leaving Wed 11 Nov, 06:00 UTC instead lowers the risk from 🟡 Yellow
+  to 🟢 Green."
+- **📅 5-day hub outlook:** the signal for one hub in 3-hour steps over the
+  next 5 days, the worst signal in the next 24 hours, and how many hours
+  are orange or red.
+- **📊 Hub reliability:** for each tracked hub with at least 5 readings,
+  the share of logged readings at each signal, most disrupted first.
+
+Forecasts are cached for 30 minutes and are **not** added to the log,
+because they are predictions, not observations. The full rules and the
+limits for each vehicle are on the **How to use** page.
 
 ### 🌤️ Live Conditions
 
@@ -144,8 +200,9 @@ just the ones you're tracking.
 
 Short instructions inside the app, an explanation of how the comfort
 index is calculated (it starts at 100 and loses points for temperature
-away from 21 °C, humidity outside 30–60 %, and wind above 5 m/s), and a
-button to **download the full log as a CSV**.
+away from 21 °C, humidity outside 30–60 %, and wind above 5 m/s), the
+delivery-risk rules with each vehicle's limits, and a button to
+**download the full log as a CSV**.
 
 ## Project structure
 
@@ -162,6 +219,7 @@ button to **download the full log as a CSV**.
 │       ├── models.py           # WeatherSnapshot and the comfort index
 │       ├── storage.py          # logging/loading fetched history
 │       ├── analytics.py        # trend, comparison and derived-metric views
+│       ├── logistics.py        # delivery risk: signals, vehicles, routes
 │       ├── collect.py          # `uv run collect-weather`
 │       └── config.py           # reads the API key, project paths
 ├── app.py                      # Streamlit entry point
@@ -171,7 +229,8 @@ button to **download the full log as a CSV**.
 
 ## Team
 
-- **Jyothika:** API client, data model, analytics, Streamlit app
+- **Jyothika:** API client, data model, analytics, Streamlit app,
+  delivery-risk use case
 - **Juan:** client error tests (timeout, 403)
 - **Enrique:** daily temperature range analytics
 - **Victoria:** feels-like gap analytics

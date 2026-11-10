@@ -12,6 +12,14 @@ CALM_WIND_MS = 5.0
 WIND_PENALTY_PER_MS = 2.0
 
 
+def _optional_float(value) -> float | None:
+    """float(value), or None for a missing value (None, "" or NaN)."""
+    if value is None or value == "":
+        return None
+    value = float(value)
+    return None if value != value else value  # NaN != NaN
+
+
 def comfort_index(temperature: float, humidity: float,
                   wind_speed: float) -> float:
     """Score how pleasant conditions feel, from 0 (awful) to 100 (ideal).
@@ -35,13 +43,24 @@ def comfort_index(temperature: float, humidity: float,
 
 
 class WeatherSnapshot:
-    """Current conditions for one city, as fetched at `fetched_at` (UTC)."""
+    """Conditions for one city at `fetched_at` (UTC).
+
+    Usually an observation we fetched; for a forecast, `fetched_at` is the
+    time the forecast is for. The last five arguments are the details the
+    logistics risk rules need; older log rows don't have them, so they are
+    optional and None when unknown.
+    """
 
     def __init__(self, city: str, country: str, temperature: float,
                  feels_like: float, humidity: float, wind_speed: float,
                  pressure: float, description: str, icon: str = "",
                  lat: float | None = None, lon: float | None = None,
-                 fetched_at: datetime | None = None):
+                 fetched_at: datetime | None = None,
+                 condition_id: int | None = None,
+                 visibility: float | None = None,
+                 wind_gust: float | None = None,
+                 rain_mm_h: float | None = None,
+                 snow_mm_h: float | None = None):
         self.city = city
         self.country = country
         self.temperature = float(temperature)
@@ -54,25 +73,98 @@ class WeatherSnapshot:
         self.lat = lat
         self.lon = lon
         self.fetched_at = fetched_at or datetime.now(timezone.utc)
+        # OpenWeatherMap condition code, e.g. 500 = light rain, 211 =
+        # thunderstorm: https://openweathermap.org/weather-conditions
+        condition_id = _optional_float(condition_id)
+        self.condition_id = None if condition_id is None else int(condition_id)
+        self.visibility = _optional_float(visibility)    # metres, max 10000
+        self.wind_gust = _optional_float(wind_gust)      # m/s
+        self.rain_mm_h = _optional_float(rain_mm_h)      # mm per hour
+        self.snow_mm_h = _optional_float(snow_mm_h)      # mm per hour
 
     @classmethod
-    def from_api(cls, data: dict) -> "WeatherSnapshot":
-        """Build a snapshot from an OpenWeatherMap /weather JSON response."""
-        main = data["main"]
-        weather = data["weather"][0] if data.get("weather") else {}
-        coord = data.get("coord", {})
+    def _from_owm(cls, item: dict, city: str, country: str, coord: dict,
+                  precip_key: str, precip_hours: float,
+                  fetched_at: datetime | None = None) -> "WeatherSnapshot":
+        """Shared parsing for /weather responses and /forecast list items.
+
+        Rain and snow come as mm over the last hour ("1h") for current
+        weather and over 3 hours ("3h") for a forecast step, so both are
+        converted to mm per hour.
+        """
+        main = item["main"]
+        weather = item["weather"][0] if item.get("weather") else {}
+        wind = item.get("wind", {})
+
+        def per_hour(kind: str) -> float | None:
+            amount = (item.get(kind) or {}).get(precip_key)
+            return None if amount is None else amount / precip_hours
+
         return cls(
-            city=data["name"],
-            country=data.get("sys", {}).get("country", ""),
+            city=city,
+            country=country,
             temperature=main["temp"],
             feels_like=main["feels_like"],
             humidity=main["humidity"],
-            wind_speed=data.get("wind", {}).get("speed", 0.0),
+            wind_speed=wind.get("speed", 0.0),
             pressure=main["pressure"],
             description=weather.get("description", ""),
             icon=weather.get("icon", ""),
             lat=coord.get("lat"),
             lon=coord.get("lon"),
+            fetched_at=fetched_at,
+            condition_id=weather.get("id"),
+            visibility=item.get("visibility"),
+            wind_gust=wind.get("gust"),
+            rain_mm_h=per_hour("rain"),
+            snow_mm_h=per_hour("snow"),
+        )
+
+    @classmethod
+    def from_api(cls, data: dict) -> "WeatherSnapshot":
+        """Build a snapshot from an OpenWeatherMap /weather JSON response."""
+        return cls._from_owm(data, data["name"],
+                             data.get("sys", {}).get("country", ""),
+                             data.get("coord", {}), "1h", 1.0)
+
+    @classmethod
+    def from_forecast(cls, item: dict, city: dict) -> "WeatherSnapshot":
+        """Build a snapshot from one 3-hour step of a /forecast response.
+
+        `item` is an element of the response's "list"; `city` is its
+        "city" object. `fetched_at` is set to the time the step is for.
+        """
+        return cls._from_owm(
+            item, city["name"], city.get("country", ""),
+            city.get("coord", {}), "3h", 3.0,
+            fetched_at=datetime.fromtimestamp(item["dt"], timezone.utc))
+
+    @classmethod
+    def from_record(cls, record) -> "WeatherSnapshot":
+        """Rebuild a snapshot from a log row (a dict or a pandas row)."""
+        fetched_at = record["fetched_at"]
+        if isinstance(fetched_at, str):
+            fetched_at = datetime.fromisoformat(fetched_at)
+        elif hasattr(fetched_at, "to_pydatetime"):
+            fetched_at = fetched_at.to_pydatetime()
+        return cls(
+            city=record["city"],
+            country=record.get("country", "") or "",
+            temperature=record["temperature"],
+            feels_like=record["feels_like"],
+            humidity=record["humidity"],
+            wind_speed=record["wind_speed"],
+            pressure=record["pressure"],
+            description=record.get("description", "") or "",
+            icon=record.get("icon", "") or "",
+            lat=_optional_float(record.get("lat")),
+            lon=_optional_float(record.get("lon")),
+            fetched_at=fetched_at,
+            condition_id=record.get("condition_id"),
+            visibility=record.get("visibility"),
+            wind_gust=record.get("wind_gust"),
+            rain_mm_h=record.get("rain_mm_h"),
+            snow_mm_h=record.get("snow_mm_h"),
         )
 
     # ---- computed values (not returned by the API) -------------------
@@ -118,6 +210,11 @@ class WeatherSnapshot:
             "icon": self.icon,
             "lat": self.lat,
             "lon": self.lon,
+            "condition_id": self.condition_id,
+            "visibility": self.visibility,
+            "wind_gust": self.wind_gust,
+            "rain_mm_h": self.rain_mm_h,
+            "snow_mm_h": self.snow_mm_h,
         }
 
     # ---- special methods ---------------------------------------------

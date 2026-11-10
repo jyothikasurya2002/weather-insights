@@ -295,3 +295,64 @@ score."
   follow.
 
 ---
+
+## Feature: delivery-risk business use case (logistics)
+
+**Asked:** After our review, the professor asked us to use the insights to
+solve a business use case. We chose logistics: "green, yellow, orange and
+red signals based on the time delay the weather causes, with weather as
+the main role." We asked for the full version, including the 5-day
+forecast.
+
+**Got:**
+- `logistics.py`:
+  - `RiskLevel` (an ordered `IntEnum`: green → red, each with an emoji,
+    colour, advice and delay range).
+  - `RiskFactor` and `RiskAssessment` dataclasses.
+  - A `VehicleProfile` base class with `Van`, `Truck` and `Bike`
+    subclasses that override the wind, gust and heat limits. `Bike` also
+    overrides `_adjust` to make rain one level worse.
+  - Route functions (`assess_route`, `departure_options`,
+    `best_departure`) and `hub_reliability` over the log.
+- `client.py`: `fetch_forecast()` for the free 5-day / 3-hour forecast,
+  sharing validation and 404 handling with `fetch_current` through a new
+  `_get_city` helper.
+- `models.py`: `WeatherSnapshot` now also keeps the condition code,
+  visibility, wind gust and rain/snow in mm per hour, which the API was
+  already sending. It also has `from_forecast` and `from_record`
+  constructors.
+- `storage.py`: the log has 5 new columns. An old log file is upgraded in
+  place the first time it is written to, without losing rows.
+- A new first page in the app, **🚚 Delivery Risk**, with a dispatch
+  board, route planner, 5-day hub outlook and hub reliability chart. The
+  How to use page explains the rules, and the README has a new section.
+- 42 new tests (79 in total).
+
+**Checked:**
+- Called the real `/forecast` endpoint first to confirm the response
+  shape (40 steps, `rain.3h`, `wind.gust`, `visibility`, `weather[0].id`)
+  before writing the parser.
+- Ran the rules on our real 176-row log. Paris fog → 🟠, Mumbai smoke →
+  🟡, New York "heavy intensity rain" → 🔴, and a bike is stricter than a
+  van, as intended.
+- Found and fixed a rounding issue: "disrupted" showed 12.4 % instead of
+  12.5 % because it was summed after rounding.
+- Rendered every page with Streamlit's `AppTest` and the real API key: no
+  exceptions. Paris → London by truck came out 🟡 (light rain at both
+  ends), and the planner suggested leaving at 06:00 the next day for 🟢.
+- Checked that rendering the app does not change `weather_log.csv`.
+- `uv run pytest`: 79 passed.
+
+**Kept / changed / rejected:**
+- Kept the thresholds as clearly labelled assumptions (in the module
+  docstring, How to use page and README) instead of presenting them as
+  real delay data, which we don't have.
+- Kept forecasts out of the log, because the log is for observations
+  only, and mixing in predictions would distort the trends.
+- Rejected a machine-learning delay model: we have no real delivery
+  times to train on, so rules we can explain are more honest.
+- Old log rows have no condition code, so they are judged from their
+  description text. This is a documented fallback rather than dropping
+  history.
+
+---

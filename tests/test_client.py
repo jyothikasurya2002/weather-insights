@@ -138,3 +138,57 @@ def test_403_raises_generic_api_error():
     with pytest.raises(APIError) as info:
         client.fetch_current("London")
     assert info.type is APIError
+
+FORECAST_JSON = {
+    "city": {"name": "London", "country": "GB",
+             "coord": {"lat": 51.51, "lon": -0.13}},
+    "list": [  # deliberately out of order
+        {"dt": 1794344400,
+         "main": {"temp": 9.0, "feels_like": 7.0, "humidity": 90,
+                  "pressure": 1005},
+         "wind": {"speed": 6.0, "gust": 12.0}, "visibility": 4000,
+         "rain": {"3h": 3.0},
+         "weather": [{"id": 501, "description": "moderate rain",
+                      "icon": "10n"}]},
+        {"dt": 1794333600,
+         "main": {"temp": 10.2, "feels_like": 9.3, "humidity": 79,
+                  "pressure": 1006},
+         "wind": {"speed": 4.0}, "visibility": 10000,
+         "weather": [{"id": 800, "description": "clear sky",
+                      "icon": "01n"}]},
+    ],
+}
+
+
+def test_fetch_forecast_parses_steps_in_time_order():
+    client = make_client({"London": FakeResponse(200, FORECAST_JSON)})
+    steps = client.fetch_forecast("London")
+    assert [s.condition_id for s in steps] == [800, 501]
+    assert steps[0].fetched_at < steps[1].fetched_at
+    rainy = steps[1]
+    assert rainy.label == "London, GB"
+    assert rainy.rain_mm_h == 1.0          # 3 mm over 3 hours
+    assert rainy.wind_gust == 12.0
+    assert rainy.visibility == 4000
+    assert steps[0].rain_mm_h is None      # no rain key -> unknown/none
+
+
+def test_fetch_forecast_unknown_city():
+    client = make_client({"Atlantis": FakeResponse(404, {})})
+    with pytest.raises(LocationNotFoundError):
+        client.fetch_forecast("Atlantis")
+
+
+def test_current_weather_keeps_logistics_details():
+    data = LONDON_JSON | {
+        "visibility": 900,
+        "wind": {"speed": 4.1, "gust": 9.0},
+        "rain": {"1h": 2.0},
+        "weather": [{"id": 500, "description": "light rain", "icon": "10d"}],
+    }
+    client = make_client({"London": FakeResponse(200, data)})
+    snapshot = client.fetch_current("London")
+    assert snapshot.condition_id == 500
+    assert snapshot.visibility == 900
+    assert snapshot.rain_mm_h == 2.0
+    assert snapshot.wind_gust == 9.0

@@ -3,6 +3,8 @@
 Run with:  uv run streamlit run app.py
 """
 
+from datetime import datetime, time, timedelta, timezone
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -27,10 +29,19 @@ from weather_app.client import (
     RateLimitError,
 )
 from weather_app.collect import DEFAULT_CITIES
+from weather_app.logistics import (
+    VEHICLES,
+    RiskLevel,
+    assess_route,
+    best_departure,
+    departure_options,
+    hub_reliability,
+)
 from weather_app.models import (
     CALM_WIND_MS,
     HUMIDITY_RANGE,
     IDEAL_TEMP_C,
+    WeatherSnapshot,
 )
 from weather_app.config import get_api_key
 from weather_app.storage import SnapshotStore
@@ -38,7 +49,8 @@ from weather_app.storage import SnapshotStore
 st.set_page_config(page_title="Weather Insights", page_icon="🌤️",
                    layout="wide")
 
-PAGES = ["🌤️ Live Conditions", "📈 Trends", "📊 Compare", "ℹ️ How to use"]
+PAGES = ["🚚 Delivery Risk", "🌤️ Live Conditions", "📈 Trends",
+         "📊 Compare", "ℹ️ How to use"]
 
 
 # ---- helpers --------------------------------------------------------------
@@ -193,6 +205,309 @@ with st.sidebar:
 
 tracked = st.session_state.tracked
 show_flashes()
+
+
+# ---- page: delivery risk (the business use case) --------------------------
+
+SIGNAL_COLORS = {level.name.title(): level.color for level in RiskLevel}
+SIGNAL_ORDER = [level.name.title() for level in RiskLevel]
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_forecast(query: str) -> list[WeatherSnapshot]:
+    """5-day forecast, cached for 30 minutes to stay within the free
+    plan's request limit. Forecasts are not added to the log."""
+    return client.fetch_forecast(query)
+
+
+def forecast_for(location: str) -> list[WeatherSnapshot] | None:
+    """The forecast, or None after showing why it couldn't be fetched."""
+    if client is None:
+        st.info("🔑 Forecasts need an API key (see the sidebar).")
+        return None
+    try:
+        with st.spinner(f"Fetching the forecast for {location}..."):
+            return get_forecast(to_query(location))
+    except APIError as error:
+        level, text = error_message(error)
+        getattr(st, level)(text)
+        return None
+
+
+def fmt_time(moment: datetime) -> str:
+    return f"{moment:%a %d %b, %H:%M} UTC"
+
+
+def signal_box(level: RiskLevel, title: str, lines: list[str]) -> None:
+    """A coloured box: green -> success, yellow/orange -> warning, red ->
+    error. The text always names the level, not only the colour."""
+    body = f"**{level} · {title}**  \n" + "  \n".join(lines)
+    if level == RiskLevel.GREEN:
+        st.success(body)
+    elif level == RiskLevel.RED:
+        st.error(body)
+    else:
+        st.warning(body)
+
+
+def logistics_page() -> None:
+    st.header("🚚 Delivery Risk")
+    st.caption("Weather turned into delivery signals for a logistics team: "
+               "🟢 normal, 🟡 minor delays, 🟠 significant delays, 🔴 hold "
+               "or reroute. Rules and delay estimates are explained on the "
+               "How to use page.")
+
+    choice = st.radio(
+        "Vehicle", list(VEHICLES), horizontal=True,
+        format_func=lambda name: f"{VEHICLES[name].emoji} {name}",
+        help="Trucks are more sensitive to wind, bikes to rain, wind and "
+             "heat.")
+    vehicle = VEHICLES[choice]
+
+    board, route, outlook, reliability = st.tabs(
+        ["📋 Dispatch board", "🗺️ Route planner", "📅 5-day hub outlook",
+         "📊 Hub reliability"])
+    with board:
+        dispatch_board(vehicle)
+    with route:
+        route_planner(vehicle)
+    with outlook:
+        hub_outlook(vehicle)
+    with reliability:
+        reliability_chart(vehicle)
+
+
+def dispatch_board(vehicle) -> None:
+    st.caption("The signal for each tracked hub right now, from its latest "
+               "reading, worst first.")
+    if st.button("🔄 Refresh live readings", key="refresh_board",
+                 disabled=client is None or not tracked):
+        with st.spinner(f"Fetching {len(tracked)} cities..."):
+            fetch_and_log([to_query(loc) for loc in tracked])
+        st.rerun()
+
+    latest = latest_by_location(history[history["location"].isin(tracked)])
+    if latest.empty:
+        st.info("No hubs yet. Add a city in the sidebar.")
+        return
+    assessments = sorted(
+        (vehicle.assess(WeatherSnapshot.from_record(row))
+         for _, row in latest.iterrows()),
+        key=lambda a: (-a.level, a.snapshot.label))
+
+    counts = st.columns(len(RiskLevel))
+    for column, level in zip(counts, reversed(RiskLevel)):
+        column.metric(str(level),
+                      sum(a.level == level for a in assessments),
+                      border=True)
+
+    for start in range(0, len(assessments), CARDS_PER_ROW):
+        columns = st.columns(CARDS_PER_ROW)
+        for column, a in zip(columns,
+                             assessments[start:start + CARDS_PER_ROW]):
+            with column:
+                low, high = a.level.delay_range
+                delay = ("no expected delay" if high == 0 else
+                         f"+{low:.0%} to +{high:.0%} trip time")
+                age = pd.Timestamp(a.snapshot.fetched_at)
+                signal_box(a.level, a.snapshot.label, [
+                    a.level.advice,
+                    f"⏱️ {delay}",
+                    "⚠️ " + ("; ".join(a.reasons) or "No weather issues"),
+                    f"🕒 Reading from {time_ago(age)}",
+                ])
+
+
+def route_planner(vehicle) -> None:
+    st.caption("Plan a trip between two hubs. The origin is judged on its "
+               "forecast at departure, the destination at arrival, and the "
+               "route takes the worse of the two.")
+    hubs = sorted(set(tracked) | set(history["location"]))
+    if len(hubs) < 2:
+        st.info("Add at least two cities in the sidebar to plan a route.")
+        return
+
+    c1, c2, c3 = st.columns(3)
+    origin = c1.selectbox("From", hubs, index=0)
+    destination = c2.selectbox("To", hubs, index=1)
+    normal_hours = c3.number_input(
+        "Normal trip time (hours)", min_value=1.0, max_value=72.0,
+        value=8.0, step=1.0,
+        help="How long the trip takes in good weather.")
+    now = datetime.now(timezone.utc)
+    c4, c5, _ = st.columns(3)
+    day = c4.date_input("Departure day (UTC)", value=now.date(),
+                        min_value=now.date(),
+                        max_value=now.date() + timedelta(days=4))
+    hour = c5.slider("Departure hour (UTC)", 0, 23,
+                     value=min(now.hour + 1, 23))
+    departure = datetime.combine(day, time(hour), tzinfo=timezone.utc)
+    if origin == destination:
+        st.warning("Pick two different hubs.")
+        return
+
+    origin_fc = forecast_for(origin)
+    destination_fc = forecast_for(destination)
+    if not origin_fc or not destination_fc:
+        return
+
+    trip = assess_route(vehicle, origin_fc, destination_fc, departure,
+                        normal_hours)
+    if trip.arrival > destination_fc[-1].fetched_at:
+        st.caption("ℹ️ Arrival is after the end of the 5-day forecast, so "
+                   "the destination uses the last forecast step.")
+    low, high = trip.trip_hours()
+    signal_box(trip.level, f"{origin} → {destination} ({vehicle.name})", [
+        trip.level.advice,
+        f"⏱️ Normal {normal_hours:.0f} h → expect "
+        + (f"{low:.1f} h" if low == high else f"{low:.1f}–{high:.1f} h"),
+        f"🛫 Depart {fmt_time(trip.departure)}, arrive about "
+        f"{fmt_time(trip.arrival)}",
+    ])
+    left, right = st.columns(2)
+    for column, title, a in ((left, "At the origin, on departure",
+                              trip.origin),
+                             (right, "At the destination, on arrival",
+                              trip.destination)):
+        with column.container(border=True):
+            st.markdown(f"**{title}**  \n{a.level} · {a.snapshot.label}")
+            st.caption(f"Forecast for {fmt_time(a.snapshot.fetched_at)}: "
+                       f"{a.snapshot.description}, "
+                       f"{a.snapshot.temperature:.1f} °C, wind "
+                       f"{a.snapshot.wind_speed:.1f} m/s")
+            st.write("; ".join(a.reasons) or "No weather issues.")
+
+    st.subheader("When is the best time to leave?")
+    options = departure_options(vehicle, origin_fc, destination_fc,
+                                normal_hours, earliest=now)
+    best = best_departure(options)
+    if best is None:
+        st.info("The trip is too long to check against the 5-day forecast.")
+        return
+    if best.level < trip.level:
+        st.info(f"💡 Leaving **{fmt_time(best.departure)}** instead lowers "
+                f"the risk from {trip.level} to {best.level}.")
+    else:
+        st.caption(f"Your departure is already as safe as any in the "
+                   f"forecast ({best.level}).")
+    table = pd.DataFrame({
+        "departure": [o.departure for o in options],
+        "signal": [o.level.name.title() for o in options],
+        "height": [int(o.level) + 1 for o in options],
+        "origin": [f"{o.origin.level.name.title()}: "
+                   + ("; ".join(o.origin.reasons) or "clear")
+                   for o in options],
+        "destination": [f"{o.destination.level.name.title()}: "
+                        + ("; ".join(o.destination.reasons) or "clear")
+                        for o in options],
+    })
+    fig = px.bar(
+        table, x="departure", y="height", color="signal",
+        color_discrete_map=SIGNAL_COLORS,
+        category_orders={"signal": SIGNAL_ORDER},
+        hover_data={"height": False, "origin": True, "destination": True},
+        labels={"departure": "Departure (UTC)", "signal": "Route signal"},
+        title="Route signal for each possible departure (3-hour steps)")
+    fig.update_yaxes(title_text="Risk", tickvals=[1, 2, 3, 4],
+                     ticktext=SIGNAL_ORDER, range=[0, 4.3])
+    fig.update_layout(bargap=0.1, legend_title_text="")
+    fig.add_vline(x=departure, line_dash="dash", line_color="gray")
+    st.plotly_chart(fig, width="stretch")
+
+
+def hub_outlook(vehicle) -> None:
+    st.caption("The signal for one hub over the next 5 days, from the "
+               "forecast in 3-hour steps.")
+    hubs = sorted(set(tracked) | set(history["location"]))
+    if not hubs:
+        st.info("Add a city in the sidebar first.")
+        return
+    hub = st.selectbox("Hub", hubs, key="outlook_hub")
+    forecast = forecast_for(hub)
+    if not forecast:
+        return
+    steps = [vehicle.assess(step) for step in forecast]
+    table = pd.DataFrame({
+        "time": [a.snapshot.fetched_at for a in steps],
+        "signal": [a.level.name.title() for a in steps],
+        "height": [int(a.level) + 1 for a in steps],
+        "conditions": [a.snapshot.description for a in steps],
+        "temperature": [a.snapshot.temperature for a in steps],
+        "reasons": ["; ".join(a.reasons) or "none" for a in steps],
+    })
+
+    next_day = [a for a in steps
+                if a.snapshot.fetched_at <= steps[0].snapshot.fetched_at
+                + timedelta(hours=24)]
+    worst = max(next_day, key=lambda a: a.level)
+    disrupted = sum(a.level >= RiskLevel.ORANGE for a in steps)
+    c1, c2 = st.columns(2)
+    c1.metric("Worst in the next 24 h", str(worst.level),
+              delta=(fmt_time(worst.snapshot.fetched_at)
+                     if worst.level > RiskLevel.GREEN else None),
+              delta_color="off", delta_arrow="off", border=True)
+    c2.metric("Orange or red steps in 5 days",
+              f"{disrupted} of {len(steps)}",
+              delta=f"about {disrupted * 3} h of disruption",
+              delta_color="off", delta_arrow="off", border=True)
+
+    fig = px.bar(
+        table, x="time", y="height", color="signal",
+        color_discrete_map=SIGNAL_COLORS,
+        category_orders={"signal": SIGNAL_ORDER},
+        hover_data={"height": False, "conditions": True,
+                    "temperature": ":.1f", "reasons": True},
+        labels={"time": "Time (UTC)", "signal": "Signal",
+                "temperature": "Temperature (°C)"},
+        title=f"{hub}: {vehicle.name} signal, next 5 days")
+    fig.update_yaxes(title_text="Risk", tickvals=[1, 2, 3, 4],
+                     ticktext=SIGNAL_ORDER, range=[0, 4.3])
+    fig.update_layout(bargap=0.1, legend_title_text="")
+    st.plotly_chart(fig, width="stretch")
+
+
+MIN_READINGS = 5
+
+
+def reliability_chart(vehicle) -> None:
+    st.caption("How often each hub's logged weather would have meant each "
+               "signal. Uses every reading in our log, not the forecast.")
+    data = history[history["location"].isin(tracked)]
+    table = hub_reliability(data, vehicle)
+    if table.empty:
+        st.info("No logged readings for the tracked hubs yet.")
+        return
+    enough = table[table["readings"] >= MIN_READINGS]
+    if enough.empty:
+        st.info(f"Each hub needs at least {MIN_READINGS} readings.")
+        return
+
+    long = enough.melt(id_vars=["location", "readings"],
+                       value_vars=SIGNAL_ORDER, var_name="signal",
+                       value_name="share")
+    fig = px.bar(
+        long, x="share", y="location", color="signal", orientation="h",
+        color_discrete_map=SIGNAL_COLORS,
+        category_orders={"signal": SIGNAL_ORDER,
+                         "location": list(enough["location"])},
+        hover_data={"readings": True, "share": ":.1f"},
+        labels={"share": "Share of readings (%)", "location": "Hub",
+                "signal": "Signal", "readings": "Readings"},
+        title=f"Share of time at each signal ({vehicle.name})")
+    fig.update_layout(legend_title_text="",
+                      height=max(300, 45 * len(enough)))
+    st.plotly_chart(fig, width="stretch")
+
+    top = enough.iloc[0]
+    if top["disrupted"] > 0:
+        st.caption(f"Most disrupted hub: **{top['location']}**, orange or "
+                   f"red in {top['disrupted']:.0f} % of its "
+                   f"{top['readings']} readings.")
+    skipped = len(table) - len(enough)
+    st.caption(f"Hubs with fewer than {MIN_READINGS} readings are left out"
+               + (f" ({skipped} hidden)." if skipped else ".")
+               + " Readings logged before 10 Nov have no condition code or "
+               "visibility, so they are judged from their description.")
 
 
 # ---- page: live conditions ------------------------------------------------
@@ -477,15 +792,22 @@ def help_page() -> None:
     low, high = HUMIDITY_RANGE
     st.markdown(f"""
 **Weather Insights** tracks live weather for the cities you choose and
-builds its own history, so you can see trends and compare places.
+builds its own history, so you can see trends and compare places. Its main
+use case is **delivery risk**: turning weather into go / slow down / stop
+signals for a logistics team.
 
 1. **Add cities** in the sidebar: type a name (e.g. `Madrid`) and press
-   *Add & fetch*. For ambiguous names add a country code: `Paris,FR`.
-2. **Live Conditions** shows the latest reading per city. Press
+   *Add & fetch*. Each city is a delivery hub. For ambiguous names add a
+   country code: `Paris,FR`.
+2. **Delivery Risk** gives each hub a signal for the chosen vehicle, plans
+   a route between two hubs with the 5-day forecast (and suggests a safer
+   departure time), shows a hub's next 5 days, and ranks hubs by how often
+   our logged weather disrupted them.
+3. **Live Conditions** shows the latest reading per city. Press
    *Fetch latest* any time to record a new reading for every tracked city.
-3. **Trends** charts how a metric changed over time for the cities you pick,
+4. **Trends** charts how a metric changed over time for the cities you pick,
    and each day's low-to-high temperature range.
-4. **Compare** ranks cities by any metric, highlights the extremes, shows
+5. **Compare** ranks cities by any metric, highlights the extremes, shows
    which cities feel colder or warmer than the thermometer says, and maps
    them.
 
@@ -506,6 +828,7 @@ A score the API doesn't provide, computed by us from three readings:
 Example: 22 °C, 70 % humidity and 7 m/s wind gives
 100 − 3 − 5 − 4 = **88**.
 """)
+    delivery_rules()
     if not history.empty:
         st.download_button(
             "⬇️ Download the full log (CSV)",
@@ -513,9 +836,52 @@ Example: 22 °C, 70 % humidity and 7 m/s wind gives
             file_name="weather_log.csv", mime="text/csv")
 
 
+def delivery_rules() -> None:
+    """The delivery-risk rules, built from the vehicle classes themselves
+    so the explanation can't drift from the code."""
+    st.markdown("""
+#### Delivery risk signals
+Each reading gets the **worst** signal of four factors: precipitation,
+visibility, wind and temperature.
+
+| Signal | Means | Extra trip time |
+|---|---|---|
+""" + "\n".join(
+        f"| {level} | {level.advice} | "
+        + ("none" if level.delay_range[1] == 0 else
+           f"+{level.delay_range[0]:.0%} to +{level.delay_range[1]:.0%}")
+        + " |" for level in RiskLevel) + """
+
+**Conditions** (from OpenWeatherMap's condition code): 🟡 drizzle, light
+rain, mist, haze, smoke or dust · 🟠 moderate rain, snow, fog · 🔴
+thunderstorm, heavy rain, freezing rain, heavy snow, sleet, squalls.
+Measured rain (≥ 2.5 mm/h 🟠, ≥ 7.6 mm/h 🔴) and visibility (under 5 km 🟡,
+3 km 🟠, 1 km 🔴) can raise it further.
+**Temperature:** ≤ 2 °C 🟡 (possible ice), ≤ −10 °C 🟠, at or below 0 °C
+with precipitation 🔴 (ice).
+
+**Limits by vehicle** (yellow / orange / red):
+""")
+    st.dataframe(pd.DataFrame([{
+        "Vehicle": f"{v.emoji} {v.name}",
+        "Wind (m/s)": " / ".join(f"{x:g}" for x in v.WIND_LIMITS),
+        "Gusts (m/s)": " / ".join(f"{x:g}" for x in v.GUST_LIMITS),
+        "Heat (°C, yellow / orange)":
+            " / ".join(f"{x:g}" for x in v.HEAT_LIMITS),
+        "Rain or snow": ("one level worse (rider exposed)"
+                         if v.name == "Bike" else "as above"),
+    } for v in VEHICLES.values()]), hide_index=True)
+    st.caption("A route takes the worse of the origin (at departure) and "
+               "the destination (at arrival). These thresholds and delay "
+               "ranges are our own assumptions based on common road-safety "
+               "guidance (e.g. gale force starts at 17 m/s), not "
+               "calibrated on real delivery data.")
+
+
 {
-    PAGES[0]: live_page,
-    PAGES[1]: trends_page,
-    PAGES[2]: compare_page,
-    PAGES[3]: help_page,
+    PAGES[0]: logistics_page,
+    PAGES[1]: live_page,
+    PAGES[2]: trends_page,
+    PAGES[3]: compare_page,
+    PAGES[4]: help_page,
 }[page]()
