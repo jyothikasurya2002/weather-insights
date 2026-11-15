@@ -2,7 +2,7 @@
 
 import requests
 
-from .models import WeatherSnapshot
+from .models import AirQuality, WeatherSnapshot
 
 # ---- exceptions: one per failure mode --------------------------------
 
@@ -178,13 +178,63 @@ class OpenWeatherClient(JSONAPIClient):
         to the observation log.
         """
         cleaned, data = self._get_city("forecast", city)
+        return self._forecast_steps(data, f"'{cleaned}'")
+
+    def fetch_forecast_at(self, lat: float, lon: float
+                          ) -> list[WeatherSnapshot]:
+        """Like fetch_forecast, but for any point, e.g. along a route.
+
+        Each step's city is the nearest named place. Over open sea
+        OpenWeatherMap returns no name and no country, so both are "".
+        """
+        lat, lon = self.validate_coordinates(lat, lon)
+        data = self._get("forecast", {"lat": lat, "lon": lon})
+        return self._forecast_steps(data, f"({lat:.2f}, {lon:.2f})")
+
+    @staticmethod
+    def _forecast_steps(data: dict, where: str) -> list[WeatherSnapshot]:
         try:
             steps = [WeatherSnapshot.from_forecast(item, data["city"])
                      for item in data["list"]]
         except (KeyError, IndexError, TypeError):
             raise APIError(f"Unexpected forecast format returned for "
-                           f"'{cleaned}'.") from None
+                           f"{where}.") from None
         return sorted(steps, key=lambda step: step.fetched_at)
+
+    @staticmethod
+    def validate_coordinates(lat: float, lon: float) -> tuple[float, float]:
+        """Return (lat, lon) as floats, or raise InvalidInputError."""
+        try:
+            lat, lon = float(lat), float(lon)
+        except (TypeError, ValueError):
+            raise InvalidInputError("Coordinates must be numbers.") from None
+        if lat != lat or lon != lon:                     # NaN
+            raise InvalidInputError("This city has no saved coordinates.")
+        if not (-90 <= lat <= 90 and -180 <= lon <= 180):
+            raise InvalidInputError(
+                f"Coordinates out of range: ({lat}, {lon}).")
+        return lat, lon
+
+    def _air(self, endpoint: str, lat: float, lon: float) -> list[AirQuality]:
+        lat, lon = self.validate_coordinates(lat, lon)
+        data = self._get(endpoint, {"lat": lat, "lon": lon})
+        try:
+            readings = [AirQuality.from_api(item) for item in data["list"]]
+        except (KeyError, IndexError, TypeError, ValueError):
+            raise APIError("Unexpected air quality data returned.") from None
+        return sorted(readings, key=lambda reading: reading.fetched_at)
+
+    def fetch_air_quality(self, lat: float, lon: float) -> AirQuality:
+        """Current air quality at a place (the free Air Pollution API)."""
+        readings = self._air("air_pollution", lat, lon)
+        if not readings:
+            raise APIError("No air quality data for this place.")
+        return readings[-1]
+
+    def fetch_air_quality_forecast(self, lat: float, lon: float
+                                   ) -> list[AirQuality]:
+        """Hourly air quality forecast for about 4 days, earliest first."""
+        return self._air("air_pollution/forecast", lat, lon)
 
     def fetch_many(self, cities: list[str]
                    ) -> tuple[list[WeatherSnapshot], dict[str, str]]:

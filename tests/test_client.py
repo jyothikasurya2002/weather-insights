@@ -42,7 +42,8 @@ class FakeSession:
 
     def get(self, url, params=None, timeout=None):
         self.calls.append(params)
-        result = self.responses[params["q"]]
+        # Air quality requests send coordinates, not a city name.
+        result = self.responses[params.get("q", "air")]
         if isinstance(result, Exception):
             raise result
         return result
@@ -192,3 +193,49 @@ def test_current_weather_keeps_logistics_details():
     assert snapshot.visibility == 900
     assert snapshot.rain_mm_h == 2.0
     assert snapshot.wind_gust == 9.0
+
+
+AIR_JSON = {
+    "coord": {"lon": 72.85, "lat": 19.01},
+    "list": [
+        {"main": {"aqi": 4}, "dt": 1794780000,
+         "components": {"pm2_5": 60.0, "pm10": 80.0, "o3": 90.0,
+                        "no2": 5.0}},
+        {"main": {"aqi": 5}, "dt": 1794776400,
+         "components": {"pm2_5": 82.75, "pm10": 106.69, "o3": 133.17,
+                        "no2": 1.0}},
+    ],
+}
+
+
+def test_fetch_air_quality_returns_latest_reading():
+    client = make_client({"air": FakeResponse(200, AIR_JSON)})
+    air = client.fetch_air_quality(19.01, 72.85)
+    assert air.aqi == 4                      # the later of the two
+    assert air.label == "Poor"
+    assert air.pm2_5 == 60.0
+    assert client._session.calls[0]["lat"] == 19.01
+
+
+def test_fetch_air_quality_forecast_is_in_time_order():
+    client = make_client({"air": FakeResponse(200, AIR_JSON)})
+    readings = client.fetch_air_quality_forecast(19.01, 72.85)
+    assert [r.aqi for r in readings] == [5, 4]
+    assert str(readings[0]) == "Air Very poor (AQI 5), PM2.5 83 µg/m³"
+
+
+@pytest.mark.parametrize("lat, lon", [
+    (91, 0), (0, 181), ("north", 0), (float("nan"), 0), (None, 0),
+])
+def test_bad_coordinates_rejected_before_request(lat, lon):
+    client = make_client({})
+    with pytest.raises(InvalidInputError):
+        client.fetch_air_quality(lat, lon)
+    assert client._session.calls == []
+
+
+def test_air_quality_with_bad_data_raises_api_error():
+    bad = {"list": [{"main": {"aqi": 9}, "dt": 1794776400}]}
+    client = make_client({"air": FakeResponse(200, bad)})
+    with pytest.raises(APIError):
+        client.fetch_air_quality(19.01, 72.85)

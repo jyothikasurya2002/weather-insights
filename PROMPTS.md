@@ -356,3 +356,112 @@ forecast.
   history.
 
 ---
+
+## Feature: air quality in the delivery-risk signals
+
+**Asked:** "Can you check if the air one is also included?", then "which
+one is more important and needed here, do that". Claude compared air
+quality (pollution) with air freight (a plane vehicle type) and
+recommended air quality, because it adds a new real data source and a
+safety concern that matters for couriers. We agreed.
+
+**Got:**
+- `models.py`: an `AirQuality` class (AQI 1–5 with OpenWeatherMap's
+  labels, PM2.5, PM10, O3, NO2), built with `from_api`. The constructor
+  rejects an AQI outside 1–5.
+- `client.py`: `fetch_air_quality(lat, lon)` and
+  `fetch_air_quality_forecast(lat, lon)` (hourly, about 4 days), plus a
+  `validate_coordinates` static method that rejects bad coordinates
+  before any request.
+- `logistics.py`: air quality is a fifth risk factor. Each vehicle has
+  `AQI_LIMITS`: van and truck drivers sit in a closed cab, so only AQI 5
+  counts (🟡), while a bike rider gets 🟡 at 3, 🟠 at 4 and 🔴 at 5.
+  `nearest_air` matches an air reading to a time, but only within 2
+  hours, and routes judge air at both ends.
+- The app shows air quality on the dispatch board, in the route planner
+  and in the 5-day outlook. The How to use page and README explain the
+  rules.
+- 19 new tests (98 in total).
+
+**Checked:**
+- Called the real `/air_pollution` and `/air_pollution/forecast`
+  endpoints first. Mumbai was AQI 5 (PM2.5 83 µg/m³), Paris 2 and Cairo
+  3. The forecast had 96 hourly steps, and bad coordinates returned HTTP
+  400.
+- In the app, Mumbai is 🟡 for a van and 🔴 for a bike, as intended.
+- **Found a bug in the AppTest run:** the route planner suggested
+  leaving Mumbai on day 5 for 🟢. That was only because the air forecast
+  had ended, so the bad air dropped out of the data.
+  `departure_options` now only offers departures with air data at both
+  ends, and a regression test covers it. Afterwards the suggestion was
+  🔴 → 🟠 on Monday at 15:00, when the AQI dips to 4.
+- Checked that using the app does not change `weather_log.csv`.
+- `uv run pytest`: 98 passed.
+
+**Kept / changed / rejected:**
+- Rejected air freight for now. It would only be one more set of
+  thresholds on data we already have, so it adds less than a new data
+  source.
+- Kept air quality out of the CSV log, so the log stays a weather
+  history and the collector doesn't double its API calls. As a result,
+  hub reliability is based on weather only, which the README says.
+- If air data is unavailable, the signal falls back to weather only
+  instead of failing, and the box says so.
+
+---
+
+## Feature: weather checkpoints along a route
+
+**Asked:** A teammate asked, "We are only analysing the inland part of the
+route? Or how does it work?" Claude explained that the route planner only
+checked the two hubs, then suggested checking points in between and
+warning about routes that aren't road trips. We said "build".
+
+**Got:**
+- `logistics.py`:
+  - `distance_km` (haversine formula) and `route_points`, which places
+    checkpoints about every 150 km on the great circle between two hubs
+    (at most 8, so a route costs at most 8 extra API calls).
+  - A `Checkpoint` dataclass, judged at the time the vehicle would pass
+    it at a steady speed.
+  - `RouteAssessment` now has `checkpoints`, `level` (the worst point)
+    and `worst`.
+  - `route_warnings` for routes that are too far or too fast for the
+    vehicle (new `MAX_TRIP_KM` / `MAX_AVG_SPEED_KMH` class limits per
+    vehicle), or that cross open sea.
+- `client.py`: `fetch_forecast_at(lat, lon)`, which shares parsing with
+  `fetch_forecast`.
+- The route planner shows the distance, the worst point, a map and a
+  table of every checkpoint, and 🚧 warnings. The How to use page lists
+  each vehicle's trip limits.
+- 7 new tests (105 in total). They cover a storm in the middle turning a
+  clear route red, a checkpoint judged at the right time, and the
+  warnings.
+
+**Checked:**
+- Called the real forecast API with coordinates first. A point between
+  Paris and London returned "Amiens", a point in the Channel returned the
+  nearest town ("Eastbourne"), and a point in the open Arabian Sea
+  returned no name and no country. That is what the open-sea warning
+  relies on.
+- Real routes in the app:
+  - Paris → London checked Neufchâtel-en-Bray and Hastings on the way.
+  - Mumbai → Dubai showed 4 "Open water" checkpoints, and by truck
+    warned that 1,934 km in 10 h would need 193 km/h.
+  - Madrid → Lisbon was 🔴 because of fog at Madrid (visibility 0.4 km),
+    with the rest of the route clear.
+- `uv run pytest`: 105 passed.
+
+**Kept / changed / rejected:**
+- Kept a straight line instead of real roads. Real road routing would
+  need another service (and key). The app says so under the map.
+- Checkpoints are judged on weather only. Air quality stays at the two
+  hubs, to keep each route to a reasonable number of API calls.
+- Rejected blocking open-sea routes: the app warns instead, because the
+  weather at the hubs is still useful for planning a ferry or air
+  freight leg.
+- The open-sea check depends on OpenWeatherMap returning no place name.
+  Near a coast it returns the nearest town, so a short sea crossing (like
+  the Channel) isn't flagged. That is a known limit.
+
+---

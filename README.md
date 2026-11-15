@@ -23,14 +23,16 @@ estimated delay:
 | 🟠 Orange | significant delays: reschedule time-critical deliveries | +25–50 % |
 | 🔴 Red | unsafe: hold or reroute | +50–100 % |
 
-The signal depends on rain and snow, visibility, wind, gusts and
-temperature (ice and heat), and on the **vehicle**: a high-sided truck is
-more sensitive to wind, and a bike courier to rain, wind and heat. The
-app answers four questions:
+The signal depends on rain and snow, visibility, wind, gusts,
+temperature (ice and heat) and **air quality** (from OpenWeatherMap's free
+Air Pollution API), and on the **vehicle**: a high-sided truck is more
+sensitive to wind, and a bike courier to rain, wind, heat and polluted
+air, which riders breathe all shift. The app answers four questions:
 
 - **Which hubs can ship right now?** (dispatch board)
 - **Is this route safe, and when is the best time to leave?** (route
-  planner, using the 5-day forecast)
+  planner, using the 5-day forecast at both hubs and at checkpoints along
+  the way)
 - **What do the next 5 days look like for a hub?** (hub outlook)
 - **Which hubs are most often disrupted by weather?** (hub reliability,
   from our own logged history)
@@ -133,25 +135,34 @@ The first page. Choose a **vehicle** (🚐 Van, 🚛 Truck or 🛵 Bike) at the
 top, then use the four tabs:
 
 - **📋 Dispatch board:** one coloured box per tracked hub with its signal,
-  what to do, the expected extra trip time and the reasons (for example
-  "Fog" or "Wind 8.2 m/s"), worst first. Counts of each signal are shown
+  what to do, the expected extra trip time, the reasons (for example
+  "Fog" or "Wind 8.2 m/s") and the current air quality (AQI 1–5 and
+  PM2.5), worst first. Counts of each signal are shown
   above. Press **🔄 Refresh live readings** to fetch and log new readings.
 - **🗺️ Route planner:** pick **From** and **To** hubs, the normal trip time
   and a departure day and hour (UTC, up to 4 days ahead). The origin is
-  judged on its forecast at departure and the destination at arrival,
-  and the route takes the worse of the two. You see the expected trip
+  judged on its weather and air quality forecast at departure and the
+  destination at arrival. In between, the app checks the weather forecast
+  at **checkpoints about every 150 km** on the straight line between the
+  hubs (at most 8), each at the time the vehicle would pass it. The route
+  takes the worst point and names it, e.g. "Worst point: Hastings (km
+  229): Wind 9.7 m/s". A map and a table show every checkpoint. The app
+  warns when a route is too far or too fast for the vehicle, or crosses
+  open sea (e.g. Mumbai → Dubai), because then it isn't a road trip. You see the expected trip
   time, both ends' conditions, and a chart of the route signal for every
   possible departure. If another time is safer, the app suggests it, e.g.
   "Leaving Wed 11 Nov, 06:00 UTC instead lowers the risk from 🟡 Yellow
   to 🟢 Green."
 - **📅 5-day hub outlook:** the signal for one hub in 3-hour steps over the
-  next 5 days, the worst signal in the next 24 hours, and how many hours
+  next 5 days (the air quality forecast covers about the first 4), the worst signal in the next 24 hours, and how many hours
   are orange or red.
 - **📊 Hub reliability:** for each tracked hub with at least 5 readings,
   the share of logged readings at each signal, most disrupted first.
 
-Forecasts are cached for 30 minutes and are **not** added to the log,
-because they are predictions, not observations. The full rules and the
+Forecasts and air quality are cached for 30 minutes and are **not** added
+to the log: forecasts are predictions, not observations, and the log stays
+a weather history. If air quality can't be fetched, the signal uses the
+weather alone and the box says "Air quality: not available". The full rules and the
 limits for each vehicle are on the **How to use** page.
 
 ### 🌤️ Live Conditions

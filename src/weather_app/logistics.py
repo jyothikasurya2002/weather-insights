@@ -8,10 +8,11 @@ signal with an estimated delay:
     ORANGE  significant delays            +25-50 %
     RED     unsafe: hold or reroute       +50-100 %
 
-The signal is the worst of four factors: precipitation, visibility, wind
-and temperature. Vehicle types tolerate weather differently (a high-sided
-truck is more exposed to wind, a bike courier to rain), so each one is a
-VehicleProfile subclass with its own limits.
+The signal is the worst of five factors: precipitation, visibility, wind,
+temperature and, when we have it, air quality. Vehicle types tolerate
+conditions differently (a high-sided truck is more exposed to wind, a
+bike courier to rain and polluted air), so each one is a VehicleProfile
+subclass with its own limits.
 
 The thresholds and delay ranges are our own rule-based assumptions, set
 from common road-safety guidance (e.g. gale force starts at 17 m/s, fog
@@ -19,13 +20,14 @@ means visibility under 1 km). They are not calibrated on real delivery
 data.
 """
 
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import IntEnum
 
 import pandas as pd
 
-from .models import WeatherSnapshot
+from .models import AirQuality, WeatherSnapshot
 
 
 class RiskLevel(IntEnum):
@@ -66,7 +68,7 @@ class RiskLevel(IntEnum):
 class RiskFactor:
     """One reason a reading is risky, e.g. ORANGE because of fog."""
 
-    kind: str          # "precipitation", "visibility", "wind", "temperature"
+    kind: str  # "precipitation", "visibility", "wind", "temperature", "air"
     level: RiskLevel
     reason: str
 
@@ -78,6 +80,7 @@ class RiskAssessment:
     snapshot: WeatherSnapshot
     vehicle: str
     factors: list[RiskFactor] = field(default_factory=list)
+    air: AirQuality | None = None     # None when we have no air data
 
     @property
     def level(self) -> RiskLevel:
@@ -199,16 +202,25 @@ class VehicleProfile:
     HEAT_LIMITS = (35.0, 40.0)              # °C: yellow, orange
     RAIN_LIMITS = (0.1, 2.5, 7.6)           # mm/h: light, moderate, heavy
     HEAVY_SNOW_MM_H = 2.5                   # any snow is at least orange
+    # OpenWeatherMap AQI (1 good ... 5 very poor). Drivers sit in a closed
+    # cab, so only "very poor" air matters (loading, breaks outside).
+    AQI_LIMITS = (5, math.inf, math.inf)
+    # Sanity limits for a single road trip, used to warn about routes
+    # that don't make sense for this vehicle.
+    MAX_TRIP_KM = 1500.0
+    MAX_AVG_SPEED_KMH = 90.0
 
-    def assess(self, snapshot: WeatherSnapshot) -> RiskAssessment:
+    def assess(self, snapshot: WeatherSnapshot,
+               air: AirQuality | None = None) -> RiskAssessment:
         factors = [factor for factor in (
             self._precipitation(snapshot),
             self._visibility(snapshot),
             self._wind(snapshot),
             self._temperature(snapshot),
+            self._air_quality(air),
         ) if factor is not None]
         return RiskAssessment(snapshot, self.name,
-                              self._adjust(factors, snapshot))
+                              self._adjust(factors, snapshot), air)
 
     def _adjust(self, factors: list[RiskFactor],
                 snapshot: WeatherSnapshot) -> list[RiskFactor]:
@@ -283,6 +295,16 @@ class VehicleProfile:
                               "perishables")
         return None
 
+    def _air_quality(self, air: AirQuality | None) -> RiskFactor | None:
+        if air is None:
+            return None
+        level = _level_for(air.aqi, self.AQI_LIMITS)
+        if level == RiskLevel.GREEN:
+            return None
+        return RiskFactor("air", level,
+                          f"Air quality {air.label.lower()} (AQI {air.aqi}, "
+                          f"PM2.5 {air.pm2_5:.0f} µg/m³)")
+
     def __repr__(self) -> str:
         return f"{type(self).__name__}()"
 
@@ -301,16 +323,22 @@ class Truck(VehicleProfile):
     emoji = "🚛"
     WIND_LIMITS = (7.0, 10.0, 14.0)
     GUST_LIMITS = (12.0, 17.0, 21.0)
+    MAX_TRIP_KM = 3000.0              # long-haul, with rest stops
+    MAX_AVG_SPEED_KMH = 80.0
 
 
 class Bike(VehicleProfile):
-    """Bike or scooter courier: exposed to wind, rain and heat."""
+    """Bike or scooter courier: exposed to wind, rain, heat and polluted
+    air, which riders breathe hard for their whole shift."""
 
     name = "Bike"
     emoji = "🛵"
     WIND_LIMITS = (6.0, 9.0, 13.0)
     GUST_LIMITS = (10.0, 14.0, 18.0)
     HEAT_LIMITS = (32.0, 38.0)
+    AQI_LIMITS = (3, 4, 5)        # moderate -> yellow ... very poor -> red
+    MAX_TRIP_KM = 60.0                # local, last-mile deliveries
+    MAX_AVG_SPEED_KMH = 30.0
 
     def _adjust(self, factors: list[RiskFactor],
                 snapshot: WeatherSnapshot) -> list[RiskFactor]:
@@ -329,30 +357,121 @@ VEHICLES: dict[str, VehicleProfile] = {
 }
 
 
+# ---- geography ------------------------------------------------------------
+
+EARTH_RADIUS_KM = 6371.0
+CHECKPOINT_SPACING_KM = 150.0
+MAX_CHECKPOINTS = 8          # each one costs an API call per route
+
+
+def distance_km(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Great-circle ("as the crow flies") distance, haversine formula."""
+    p1, p2 = math.radians(lat1), math.radians(lat2)
+    dp, dl = p2 - p1, math.radians(lon2 - lon1)
+    h = (math.sin(dp / 2) ** 2
+         + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2)
+    return 2 * EARTH_RADIUS_KM * math.asin(math.sqrt(h))
+
+
+def route_points(lat1: float, lon1: float, lat2: float, lon2: float,
+                 spacing_km: float = CHECKPOINT_SPACING_KM,
+                 max_points: int = MAX_CHECKPOINTS
+                 ) -> list[tuple[float, float, float]]:
+    """Evenly spaced points strictly between two places, as
+    (fraction of the way, lat, lon), along the great circle.
+
+    About one point per `spacing_km`; long routes are capped at
+    `max_points` (so the spacing grows). A straight line, not the road.
+    """
+    total = distance_km(lat1, lon1, lat2, lon2)
+    count = min(max_points, max(0, math.ceil(total / spacing_km) - 1))
+    if count == 0:
+        return []
+    angle = total / EARTH_RADIUS_KM
+
+    def to_xyz(lat, lon):
+        lat, lon = math.radians(lat), math.radians(lon)
+        return (math.cos(lat) * math.cos(lon), math.cos(lat) * math.sin(lon),
+                math.sin(lat))
+
+    a, b = to_xyz(lat1, lon1), to_xyz(lat2, lon2)
+    points = []
+    for i in range(1, count + 1):
+        f = i / (count + 1)
+        wa = math.sin((1 - f) * angle) / math.sin(angle)
+        wb = math.sin(f * angle) / math.sin(angle)
+        x, y, z = (wa * p + wb * q for p, q in zip(a, b))
+        points.append((f, math.degrees(math.atan2(z, math.hypot(x, y))),
+                       math.degrees(math.atan2(y, x))))
+    return points
+
+
 # ---- routes and forecasts -----------------------------------------------
 
 
 @dataclass
+class Checkpoint:
+    """One point on a route, judged at the time the vehicle passes it."""
+
+    name: str
+    km: float                    # straight-line distance from the origin
+    passing_at: datetime
+    assessment: RiskAssessment
+
+    @property
+    def open_water(self) -> bool:
+        """OpenWeatherMap names no place over open sea."""
+        s = self.assessment.snapshot
+        return not s.city and not s.country
+
+
+@dataclass
 class RouteAssessment:
-    """A trip: origin weather at departure, destination at arrival."""
+    """A trip: origin at departure, any checkpoints on the way at the time
+    they are passed (assuming a steady speed), destination at arrival."""
 
     origin: RiskAssessment
     destination: RiskAssessment
     departure: datetime
     normal_hours: float
+    waypoints: list[Checkpoint] = field(default_factory=list)
+    distance_km: float | None = None
 
     @property
     def arrival(self) -> datetime:
         return self.departure + timedelta(hours=self.normal_hours)
 
     @property
+    def checkpoints(self) -> list[Checkpoint]:
+        """Every point judged, origin to destination."""
+        return [
+            Checkpoint(self.origin.snapshot.label, 0.0, self.departure,
+                       self.origin),
+            *self.waypoints,
+            Checkpoint(self.destination.snapshot.label,
+                       self.distance_km or 0.0, self.arrival,
+                       self.destination),
+        ]
+
+    @property
     def level(self) -> RiskLevel:
-        """A route is only as safe as its worst end."""
-        return max(self.origin.level, self.destination.level)
+        """A route is only as safe as its worst point."""
+        return max(c.assessment.level for c in self.checkpoints)
+
+    @property
+    def worst(self) -> Checkpoint:
+        """The first point with the route's worst signal."""
+        return next(c for c in self.checkpoints
+                    if c.assessment.level == self.level)
 
     def trip_hours(self) -> tuple[float, float]:
         low, high = self.level.delay_range
         return self.normal_hours * (1 + low), self.normal_hours * (1 + high)
+
+
+# The air forecast is hourly but only ~4 days long; beyond that we'd rather
+# have no air reading than one from a different day.
+AIR_MAX_GAP = timedelta(hours=2)
 
 
 def nearest_step(forecast: list[WeatherSnapshot],
@@ -363,39 +482,115 @@ def nearest_step(forecast: list[WeatherSnapshot],
     return min(forecast, key=lambda s: abs(s.fetched_at - when))
 
 
+def nearest_air(readings: list[AirQuality] | None, when: datetime,
+                max_gap: timedelta = AIR_MAX_GAP) -> AirQuality | None:
+    """The air reading closest to `when`, or None if none is close enough."""
+    if not readings:
+        return None
+    closest = min(readings, key=lambda r: abs(r.fetched_at - when))
+    return closest if abs(closest.fetched_at - when) <= max_gap else None
+
+
 def assess_route(vehicle: VehicleProfile,
                  origin_forecast: list[WeatherSnapshot],
                  destination_forecast: list[WeatherSnapshot],
-                 departure: datetime, normal_hours: float
-                 ) -> RouteAssessment:
+                 departure: datetime, normal_hours: float,
+                 origin_air: list[AirQuality] | None = None,
+                 destination_air: list[AirQuality] | None = None,
+                 waypoints: list[tuple[float, list[WeatherSnapshot]]]
+                 | None = None,
+                 distance: float | None = None) -> RouteAssessment:
+    """Origin conditions at departure, destination at arrival.
+
+    `waypoints` are (fraction of the way, forecast) pairs for points in
+    between; each is judged at the time the vehicle would pass it. The
+    air forecasts are optional; without them only weather is judged.
+    """
     arrival = departure + timedelta(hours=normal_hours)
+    checkpoints = []
+    for fraction, forecast in waypoints or []:
+        passing = departure + timedelta(hours=fraction * normal_hours)
+        step = nearest_step(forecast, passing)
+        checkpoints.append(Checkpoint(
+            step.label or "Open water", fraction * (distance or 0.0),
+            passing, vehicle.assess(step)))
     return RouteAssessment(
-        vehicle.assess(nearest_step(origin_forecast, departure)),
-        vehicle.assess(nearest_step(destination_forecast, arrival)),
-        departure, normal_hours)
+        vehicle.assess(nearest_step(origin_forecast, departure),
+                       nearest_air(origin_air, departure)),
+        vehicle.assess(nearest_step(destination_forecast, arrival),
+                       nearest_air(destination_air, arrival)),
+        departure, normal_hours, checkpoints, distance)
 
 
 def departure_options(vehicle: VehicleProfile,
                       origin_forecast: list[WeatherSnapshot],
                       destination_forecast: list[WeatherSnapshot],
                       normal_hours: float,
-                      earliest: datetime | None = None
+                      earliest: datetime | None = None,
+                      origin_air: list[AirQuality] | None = None,
+                      destination_air: list[AirQuality] | None = None,
+                      waypoints: list[tuple[float, list[WeatherSnapshot]]]
+                      | None = None,
+                      distance: float | None = None
                       ) -> list[RouteAssessment]:
     """The route assessed for every forecast step as a departure time.
 
     Only departures whose arrival is still inside the destination's
     forecast are included, so each one is backed by real forecast data.
+    The same goes for air quality when it is given: its forecast is
+    shorter than the weather one, and a departure past its end would look
+    safer only because the bad air had dropped out of the data.
     """
     if not origin_forecast or not destination_forecast:
         return []
-    last = destination_forecast[-1].fetched_at
+    trip = timedelta(hours=normal_hours)
+
+    def covered(departure: datetime) -> bool:
+        arrival = departure + trip
+        if arrival > destination_forecast[-1].fetched_at:
+            return False
+        if origin_air and nearest_air(origin_air, departure) is None:
+            return False
+        if destination_air and nearest_air(destination_air, arrival) is None:
+            return False
+        return True
+
     return [
         assess_route(vehicle, origin_forecast, destination_forecast,
-                     step.fetched_at, normal_hours)
+                     step.fetched_at, normal_hours, origin_air,
+                     destination_air, waypoints, distance)
         for step in origin_forecast
         if (earliest is None or step.fetched_at >= earliest)
-        and step.fetched_at + timedelta(hours=normal_hours) <= last
+        and covered(step.fetched_at)
     ]
+
+
+def route_warnings(vehicle: VehicleProfile, route: RouteAssessment
+                   ) -> list[str]:
+    """Reasons a route doesn't make sense as one road trip."""
+    warnings = []
+    distance = route.distance_km
+    if distance:
+        if distance > vehicle.MAX_TRIP_KM:
+            warnings.append(
+                f"{distance:,.0f} km in a straight line is beyond a normal "
+                f"{vehicle.name.lower()} trip (up to "
+                f"{vehicle.MAX_TRIP_KM:,.0f} km).")
+        speed = distance / route.normal_hours
+        if speed > vehicle.MAX_AVG_SPEED_KMH:
+            warnings.append(
+                f"Covering {distance:,.0f} km in {route.normal_hours:g} h "
+                f"needs an average of {speed:.0f} km/h, faster than a "
+                f"{vehicle.name.lower()} can manage "
+                f"({vehicle.MAX_AVG_SPEED_KMH:.0f} km/h): the normal trip "
+                "time looks too short.")
+    at_sea = sum(c.open_water for c in route.waypoints)
+    if at_sea:
+        warnings.append(
+            f"{at_sea} of {len(route.waypoints)} checkpoints are over open "
+            "sea, so this is not a road route (it needs a ferry or air "
+            "freight).")
+    return warnings
 
 
 def best_departure(options: list[RouteAssessment]

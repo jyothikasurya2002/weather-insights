@@ -35,12 +35,18 @@ from weather_app.logistics import (
     assess_route,
     best_departure,
     departure_options,
+    distance_km,
     hub_reliability,
+    nearest_air,
+    route_points,
+    route_warnings,
 )
 from weather_app.models import (
+    AQI_LABELS,
     CALM_WIND_MS,
     HUMIDITY_RANGE,
     IDEAL_TEMP_C,
+    AirQuality,
     WeatherSnapshot,
 )
 from weather_app.config import get_api_key
@@ -234,6 +240,63 @@ def forecast_for(location: str) -> list[WeatherSnapshot] | None:
         return None
 
 
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_forecast_at(lat: float, lon: float) -> list[WeatherSnapshot]:
+    """Forecast for a point on a route (coordinates rounded by the caller
+    so nearby requests share the cache)."""
+    return client.fetch_forecast_at(lat, lon)
+
+
+def waypoint_forecasts(origin: WeatherSnapshot, destination: WeatherSnapshot
+                       ) -> tuple[float, list[tuple[float, list]]]:
+    """Straight-line distance and (fraction, forecast) for each checkpoint
+    between two hubs. A checkpoint that can't be fetched is skipped."""
+    distance = distance_km(origin.lat, origin.lon,
+                           destination.lat, destination.lon)
+    points = route_points(origin.lat, origin.lon,
+                          destination.lat, destination.lon)
+    forecasts = []
+    with st.spinner(f"Fetching the forecast for {len(points)} checkpoints "
+                    "along the route..."):
+        for fraction, lat, lon in points:
+            try:
+                forecasts.append(
+                    (fraction, get_forecast_at(round(lat, 2), round(lon, 2))))
+            except APIError:
+                continue
+    if len(forecasts) < len(points):
+        st.caption(f"⚠️ {len(points) - len(forecasts)} checkpoint forecasts "
+                   "could not be fetched and were skipped.")
+    return distance, forecasts
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_air(lat: float, lon: float) -> AirQuality:
+    return client.fetch_air_quality(lat, lon)
+
+
+@st.cache_data(ttl=1800, show_spinner=False)
+def get_air_forecast(lat: float, lon: float) -> list[AirQuality]:
+    return client.fetch_air_quality_forecast(lat, lon)
+
+
+def air_or_none(fetch, lat, lon):
+    """Air data is a bonus on top of the weather: if it can't be fetched
+    (no key, no coordinates, API error) the signal uses weather only."""
+    if client is None:
+        return None
+    try:
+        return fetch(lat, lon)
+    except APIError:
+        return None
+
+
+def air_line(air: AirQuality | None) -> str:
+    if air is None:
+        return "🌫️ Air quality: not available"
+    return f"🌫️ {air}"
+
+
 def fmt_time(moment: datetime) -> str:
     return f"{moment:%a %d %b, %H:%M} UTC"
 
@@ -260,8 +323,8 @@ def logistics_page() -> None:
     choice = st.radio(
         "Vehicle", list(VEHICLES), horizontal=True,
         format_func=lambda name: f"{VEHICLES[name].emoji} {name}",
-        help="Trucks are more sensitive to wind, bikes to rain, wind and "
-             "heat.")
+        help="Trucks are more sensitive to wind; bikes to rain, wind, heat "
+             "and polluted air.")
     vehicle = VEHICLES[choice]
 
     board, route, outlook, reliability = st.tabs(
@@ -279,7 +342,7 @@ def logistics_page() -> None:
 
 def dispatch_board(vehicle) -> None:
     st.caption("The signal for each tracked hub right now, from its latest "
-               "reading, worst first.")
+               "weather reading and current air quality, worst first.")
     if st.button("🔄 Refresh live readings", key="refresh_board",
                  disabled=client is None or not tracked):
         with st.spinner(f"Fetching {len(tracked)} cities..."):
@@ -290,10 +353,12 @@ def dispatch_board(vehicle) -> None:
     if latest.empty:
         st.info("No hubs yet. Add a city in the sidebar.")
         return
-    assessments = sorted(
-        (vehicle.assess(WeatherSnapshot.from_record(row))
-         for _, row in latest.iterrows()),
-        key=lambda a: (-a.level, a.snapshot.label))
+    with st.spinner("Checking air quality..."):
+        assessments = sorted(
+            (vehicle.assess(WeatherSnapshot.from_record(row),
+                            air_or_none(get_air, row["lat"], row["lon"]))
+             for _, row in latest.iterrows()),
+            key=lambda a: (-a.level, a.snapshot.label))
 
     counts = st.columns(len(RiskLevel))
     for column, level in zip(counts, reversed(RiskLevel)):
@@ -314,14 +379,17 @@ def dispatch_board(vehicle) -> None:
                     a.level.advice,
                     f"⏱️ {delay}",
                     "⚠️ " + ("; ".join(a.reasons) or "No weather issues"),
-                    f"🕒 Reading from {time_ago(age)}",
+                    air_line(a.air),
+                    f"🕒 Weather reading from {time_ago(age)}",
                 ])
 
 
 def route_planner(vehicle) -> None:
     st.caption("Plan a trip between two hubs. The origin is judged on its "
-               "forecast at departure, the destination at arrival, and the "
-               "route takes the worse of the two.")
+               "forecast at departure, checkpoints every ~150 km on the "
+               "straight line between them at the time the vehicle passes, "
+               "and the destination at arrival. The route takes the worst "
+               "point.")
     hubs = sorted(set(tracked) | set(history["location"]))
     if len(hubs) < 2:
         st.info("Add at least two cities in the sidebar to plan a route.")
@@ -351,35 +419,42 @@ def route_planner(vehicle) -> None:
     if not origin_fc or not destination_fc:
         return
 
+    origin_air = air_or_none(get_air_forecast, origin_fc[0].lat,
+                             origin_fc[0].lon)
+    destination_air = air_or_none(get_air_forecast, destination_fc[0].lat,
+                                  destination_fc[0].lon)
+    distance, waypoints = waypoint_forecasts(origin_fc[0], destination_fc[0])
     trip = assess_route(vehicle, origin_fc, destination_fc, departure,
-                        normal_hours)
+                        normal_hours, origin_air, destination_air,
+                        waypoints, distance)
+    for warning in route_warnings(vehicle, trip):
+        st.warning(f"🚧 {warning}")
     if trip.arrival > destination_fc[-1].fetched_at:
         st.caption("ℹ️ Arrival is after the end of the 5-day forecast, so "
                    "the destination uses the last forecast step.")
     low, high = trip.trip_hours()
+    worst = trip.worst
     signal_box(trip.level, f"{origin} → {destination} ({vehicle.name})", [
         trip.level.advice,
         f"⏱️ Normal {normal_hours:.0f} h → expect "
         + (f"{low:.1f} h" if low == high else f"{low:.1f}–{high:.1f} h"),
         f"🛫 Depart {fmt_time(trip.departure)}, arrive about "
         f"{fmt_time(trip.arrival)}",
+        f"📏 {distance:,.0f} km in a straight line, "
+        f"{len(trip.checkpoints)} points checked",
+        (f"📍 Worst point: {worst.name} (km {worst.km:,.0f}) at "
+         f"{fmt_time(worst.passing_at)}: "
+         + "; ".join(worst.assessment.reasons)
+         if trip.level > RiskLevel.GREEN else "📍 No issues at any point"),
     ])
-    left, right = st.columns(2)
-    for column, title, a in ((left, "At the origin, on departure",
-                              trip.origin),
-                             (right, "At the destination, on arrival",
-                              trip.destination)):
-        with column.container(border=True):
-            st.markdown(f"**{title}**  \n{a.level} · {a.snapshot.label}")
-            st.caption(f"Forecast for {fmt_time(a.snapshot.fetched_at)}: "
-                       f"{a.snapshot.description}, "
-                       f"{a.snapshot.temperature:.1f} °C, wind "
-                       f"{a.snapshot.wind_speed:.1f} m/s")
-            st.write("; ".join(a.reasons) or "No weather issues.")
+    route_map_and_table(trip)
 
     st.subheader("When is the best time to leave?")
     options = departure_options(vehicle, origin_fc, destination_fc,
-                                normal_hours, earliest=now)
+                                normal_hours, earliest=now,
+                                origin_air=origin_air,
+                                destination_air=destination_air,
+                                waypoints=waypoints, distance=distance)
     best = best_departure(options)
     if best is None:
         st.info("The trip is too long to check against the 5-day forecast.")
@@ -394,19 +469,17 @@ def route_planner(vehicle) -> None:
         "departure": [o.departure for o in options],
         "signal": [o.level.name.title() for o in options],
         "height": [int(o.level) + 1 for o in options],
-        "origin": [f"{o.origin.level.name.title()}: "
-                   + ("; ".join(o.origin.reasons) or "clear")
-                   for o in options],
-        "destination": [f"{o.destination.level.name.title()}: "
-                        + ("; ".join(o.destination.reasons) or "clear")
-                        for o in options],
+        "worst": [f"{o.worst.name} (km {o.worst.km:,.0f}): "
+                  + ("; ".join(o.worst.assessment.reasons) or "clear")
+                  for o in options],
     })
     fig = px.bar(
         table, x="departure", y="height", color="signal",
         color_discrete_map=SIGNAL_COLORS,
         category_orders={"signal": SIGNAL_ORDER},
-        hover_data={"height": False, "origin": True, "destination": True},
-        labels={"departure": "Departure (UTC)", "signal": "Route signal"},
+        hover_data={"height": False, "worst": True},
+        labels={"departure": "Departure (UTC)", "signal": "Route signal",
+                "worst": "Worst point"},
         title="Route signal for each possible departure (3-hour steps)")
     fig.update_yaxes(title_text="Risk", tickvals=[1, 2, 3, 4],
                      ticktext=SIGNAL_ORDER, range=[0, 4.3])
@@ -415,9 +488,66 @@ def route_planner(vehicle) -> None:
     st.plotly_chart(fig, width="stretch")
 
 
+def route_map_and_table(trip) -> None:
+    """Every checkpoint on a map and in a table, coloured by signal."""
+    rows = pd.DataFrame([{
+        "point": c.name,
+        "km": round(c.km),
+        "passing": c.passing_at,
+        "signal": c.assessment.level.name.title(),
+        "conditions": c.assessment.snapshot.description,
+        "temperature": c.assessment.snapshot.temperature,
+        "reasons": "; ".join(c.assessment.reasons) or "none",
+        "air": air_line(c.assessment.air).removeprefix("🌫️ ")
+               if c.assessment.air else "",
+        "lat": c.assessment.snapshot.lat,
+        "lon": c.assessment.snapshot.lon,
+    } for c in trip.checkpoints])
+    # Waypoint snapshots carry the nearest town's coordinates; draw the
+    # line through them, so the map shows exactly where we checked.
+    fig = px.line_geo(rows, lat="lat", lon="lon", projection="natural earth")
+    fig.update_traces(line_color="gray", line_dash="dot",
+                      hoverinfo="skip", hovertemplate=None)
+    points = px.scatter_geo(
+        rows, lat="lat", lon="lon", color="signal", hover_name="point",
+        color_discrete_map=SIGNAL_COLORS,
+        category_orders={"signal": SIGNAL_ORDER},
+        hover_data={"km": True, "conditions": True, "reasons": True,
+                    "lat": False, "lon": False})
+    points.update_traces(marker_size=12)
+    for trace in points.data:
+        fig.add_trace(trace)
+    pad = 3
+    fig.update_geos(
+        showcountries=True, showland=True, landcolor="#f2f2f2",
+        lataxis_range=[rows["lat"].min() - pad, rows["lat"].max() + pad],
+        lonaxis_range=[rows["lon"].min() - pad, rows["lon"].max() + pad])
+    fig.update_layout(title="Checkpoints along the route", height=420,
+                      legend_title_text="", margin={"t": 40, "b": 0})
+    st.plotly_chart(fig, width="stretch")
+
+    st.dataframe(
+        rows.drop(columns=["lat", "lon"]), hide_index=True, width="stretch",
+        column_config={
+            "point": "Point", "km": st.column_config.NumberColumn(
+                "km from start", format="%d"),
+            "passing": st.column_config.DatetimeColumn(
+                "Passing (UTC)", format="ddd D MMM, HH:mm"),
+            "signal": "Signal", "conditions": "Forecast",
+            "temperature": st.column_config.NumberColumn(
+                "Temp (°C)", format="%.1f"),
+            "reasons": "Why", "air": "Air quality",
+        })
+    st.caption("Checkpoints are on the straight line between the hubs, "
+               "named after the nearest place, and judged on weather (air "
+               "quality is checked at the two hubs). Real roads are longer "
+               "and may pass different weather.")
+
+
 def hub_outlook(vehicle) -> None:
     st.caption("The signal for one hub over the next 5 days, from the "
-               "forecast in 3-hour steps.")
+               "weather forecast in 3-hour steps and the air quality "
+               "forecast (which covers about the first 4 days).")
     hubs = sorted(set(tracked) | set(history["location"]))
     if not hubs:
         st.info("Add a city in the sidebar first.")
@@ -426,13 +556,17 @@ def hub_outlook(vehicle) -> None:
     forecast = forecast_for(hub)
     if not forecast:
         return
-    steps = [vehicle.assess(step) for step in forecast]
+    air = air_or_none(get_air_forecast, forecast[0].lat, forecast[0].lon)
+    steps = [vehicle.assess(step, nearest_air(air, step.fetched_at))
+             for step in forecast]
     table = pd.DataFrame({
         "time": [a.snapshot.fetched_at for a in steps],
         "signal": [a.level.name.title() for a in steps],
         "height": [int(a.level) + 1 for a in steps],
         "conditions": [a.snapshot.description for a in steps],
         "temperature": [a.snapshot.temperature for a in steps],
+        "air": [f"{a.air.label} (AQI {a.air.aqi})" if a.air else "no data"
+                for a in steps],
         "reasons": ["; ".join(a.reasons) or "none" for a in steps],
     })
 
@@ -456,9 +590,9 @@ def hub_outlook(vehicle) -> None:
         color_discrete_map=SIGNAL_COLORS,
         category_orders={"signal": SIGNAL_ORDER},
         hover_data={"height": False, "conditions": True,
-                    "temperature": ":.1f", "reasons": True},
+                    "temperature": ":.1f", "air": True, "reasons": True},
         labels={"time": "Time (UTC)", "signal": "Signal",
-                "temperature": "Temperature (°C)"},
+                "temperature": "Temperature (°C)", "air": "Air quality"},
         title=f"{hub}: {vehicle.name} signal, next 5 days")
     fig.update_yaxes(title_text="Risk", tickvals=[1, 2, 3, 4],
                      ticktext=SIGNAL_ORDER, range=[0, 4.3])
@@ -841,8 +975,8 @@ def delivery_rules() -> None:
     so the explanation can't drift from the code."""
     st.markdown("""
 #### Delivery risk signals
-Each reading gets the **worst** signal of four factors: precipitation,
-visibility, wind and temperature.
+Each reading gets the **worst** signal of five factors: precipitation,
+visibility, wind, temperature and air quality.
 
 | Signal | Means | Extra trip time |
 |---|---|---|
@@ -859,6 +993,11 @@ Measured rain (≥ 2.5 mm/h 🟠, ≥ 7.6 mm/h 🔴) and visibility (under 5 km 
 3 km 🟠, 1 km 🔴) can raise it further.
 **Temperature:** ≤ 2 °C 🟡 (possible ice), ≤ −10 °C 🟠, at or below 0 °C
 with precipitation 🔴 (ice).
+**Air quality** uses OpenWeatherMap's index: """ + ", ".join(
+        f"{aqi} {label.lower()}" for aqi, label in AQI_LABELS.items()) + """.
+Van and truck drivers sit in a closed cab, so only very poor air (5)
+counts; bike couriers breathe it all shift, so it counts from moderate (3).
+Air quality is fetched live and is not saved to the log.
 
 **Limits by vehicle** (yellow / orange / red):
 """)
@@ -868,11 +1007,20 @@ with precipitation 🔴 (ice).
         "Gusts (m/s)": " / ".join(f"{x:g}" for x in v.GUST_LIMITS),
         "Heat (°C, yellow / orange)":
             " / ".join(f"{x:g}" for x in v.HEAT_LIMITS),
+        "Air quality (AQI)": " / ".join(
+            "–" if x == float("inf") else f"{x:g}" for x in v.AQI_LIMITS),
         "Rain or snow": ("one level worse (rider exposed)"
                          if v.name == "Bike" else "as above"),
+        "Max trip": f"{v.MAX_TRIP_KM:,.0f} km, "
+                    f"{v.MAX_AVG_SPEED_KMH:.0f} km/h",
     } for v in VEHICLES.values()]), hide_index=True)
-    st.caption("A route takes the worse of the origin (at departure) and "
-               "the destination (at arrival). These thresholds and delay "
+    st.caption("A route is judged at the origin (at departure), at "
+               "checkpoints about every 150 km on the straight line between "
+               "the hubs (at most 8, each when the vehicle would pass it at "
+               "a steady speed) and at the destination (at arrival), and "
+               "takes the worst point. Routes that are too far or too fast "
+               "for the vehicle, or that cross open sea, get a warning. "
+               "These thresholds and delay "
                "ranges are our own assumptions based on common road-safety "
                "guidance (e.g. gale force starts at 17 m/s), not "
                "calibrated on real delivery data.")

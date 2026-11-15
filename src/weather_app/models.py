@@ -247,3 +247,55 @@ class WeatherSnapshot:
         if not isinstance(other, WeatherSnapshot):
             return NotImplemented
         return self.temperature < other.temperature
+
+
+AQI_LABELS = {1: "Good", 2: "Fair", 3: "Moderate", 4: "Poor",
+              5: "Very poor"}
+
+
+class AirQuality:
+    """Air pollution at one place and time, from OpenWeatherMap.
+
+    `aqi` is OpenWeatherMap's Air Quality Index from 1 (good) to 5 (very
+    poor); pollutant concentrations are in µg/m³. Like WeatherSnapshot,
+    `fetched_at` is the time the reading or forecast is for, so the same
+    helpers can find the reading closest to a given moment.
+    """
+
+    def __init__(self, aqi: int, pm2_5: float = 0.0, pm10: float = 0.0,
+                 o3: float = 0.0, no2: float = 0.0,
+                 fetched_at: datetime | None = None):
+        if aqi not in AQI_LABELS:
+            raise ValueError(f"AQI must be 1-5, got {aqi!r}.")
+        self.aqi = int(aqi)
+        self.pm2_5 = float(pm2_5)
+        self.pm10 = float(pm10)
+        self.o3 = float(o3)
+        self.no2 = float(no2)
+        self.fetched_at = fetched_at or datetime.now(timezone.utc)
+
+    @classmethod
+    def from_api(cls, item: dict) -> "AirQuality":
+        """Build from one element of an /air_pollution response's list."""
+        parts = item.get("components", {})
+        return cls(
+            aqi=item["main"]["aqi"],
+            pm2_5=parts.get("pm2_5", 0.0),
+            pm10=parts.get("pm10", 0.0),
+            o3=parts.get("o3", 0.0),
+            no2=parts.get("no2", 0.0),
+            fetched_at=datetime.fromtimestamp(item["dt"], timezone.utc),
+        )
+
+    @property
+    def label(self) -> str:
+        """'Very poor' etc. — OpenWeatherMap's name for the AQI level."""
+        return AQI_LABELS[self.aqi]
+
+    def __repr__(self) -> str:
+        return (f"AirQuality(aqi={self.aqi}, pm2_5={self.pm2_5}, "
+                f"fetched_at={self.fetched_at.isoformat()!r})")
+
+    def __str__(self) -> str:
+        return (f"Air {self.label} (AQI {self.aqi}), "
+                f"PM2.5 {self.pm2_5:.0f} µg/m³")
