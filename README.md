@@ -119,8 +119,9 @@ switch between the five pages and to manage your cities.
   The city's current weather is fetched, saved to the log, and the city is
   added to your tracked list. If a name exists in several countries, add a
   country code after a comma, e.g. `Valencia,ES` or `Paris,FR`.
-- **Tracked cities:** the cities shown on the Live Conditions page. When
-  you open the app, every city in the log is tracked. Click the ✕ next to
+- **Tracked cities:** the cities (delivery hubs) shown on the Delivery Risk
+  dispatch board and the Live Conditions page. When you open the app,
+  every city in the log is tracked. Click the ✕ next to
   a city to stop tracking it. Its history stays in the log.
 - **Status:** shows whether your API key loaded (the key itself is never
   shown) and how many readings are in the log.
@@ -146,24 +147,28 @@ top, then use the four tabs:
   at **checkpoints about every 150 km** on the straight line between the
   hubs (at most 8), each at the time the vehicle would pass it. The route
   takes the worst point and names it, e.g. "Worst point: Hastings (km
-  229): Wind 9.7 m/s". A map and a table show every checkpoint. The app
-  warns when a route is too far or too fast for the vehicle, or crosses
-  open sea (e.g. Mumbai → Dubai), because then it isn't a road trip. You see the expected trip
-  time, both ends' conditions, and a chart of the route signal for every
-  possible departure. If another time is safer, the app suggests it, e.g.
-  "Leaving Wed 11 Nov, 06:00 UTC instead lowers the risk from 🟡 Yellow
-  to 🟢 Green."
+  229): Wind 9.7 m/s". A map and a table show every checkpoint with its
+  forecast and signal. The app warns when a route is too far or too fast
+  for the vehicle, or crosses open sea (e.g. Mumbai → Dubai), because then
+  it isn't a road trip. You also see the straight-line distance, the
+  expected trip time and a chart of the route signal for every possible
+  departure. If another time is safer, the app suggests it, e.g. "Leaving
+  Wed 11 Nov, 06:00 UTC instead lowers the risk from 🟡 Yellow to 🟢
+  Green."
 - **📅 5-day hub outlook:** the signal for one hub in 3-hour steps over the
-  next 5 days (the air quality forecast covers about the first 4), the worst signal in the next 24 hours, and how many hours
-  are orange or red.
+  next 5 days (the air quality forecast covers about the first 4), the
+  worst signal in the next 24 hours, and how many hours are orange or red.
 - **📊 Hub reliability:** for each tracked hub with at least 5 readings,
-  the share of logged readings at each signal, most disrupted first.
+  the share of logged readings at each signal, most disrupted first. It
+  uses the weather in our log (air quality isn't logged). Readings from
+  before 10 Nov have no condition code or visibility, so they are judged
+  from their description.
 
 Forecasts and air quality are cached for 30 minutes and are **not** added
 to the log: forecasts are predictions, not observations, and the log stays
 a weather history. If air quality can't be fetched, the signal uses the
-weather alone and the box says "Air quality: not available". The full rules and the
-limits for each vehicle are on the **How to use** page.
+weather alone and the box says "Air quality: not available". The full
+rules and the limits for each vehicle are on the **How to use** page.
 
 ### 🌤️ Live Conditions
 
@@ -226,8 +231,8 @@ delivery-risk rules with each vehicle's limits, and a button to
 │   └── weather_log.csv         # every fetch, appended by the app/collector
 ├── src/
 │   └── weather_app/
-│       ├── client.py           # API client classes and error types
-│       ├── models.py           # WeatherSnapshot and the comfort index
+│       ├── client.py           # API clients (weather, forecast, air) + errors
+│       ├── models.py           # WeatherSnapshot, AirQuality, comfort index
 │       ├── storage.py          # logging/loading fetched history
 │       ├── analytics.py        # trend, comparison and derived-metric views
 │       ├── logistics.py        # delivery risk: signals, vehicles, routes
